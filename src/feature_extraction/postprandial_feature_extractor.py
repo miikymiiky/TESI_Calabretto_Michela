@@ -32,7 +32,8 @@ class PostprandialFeatureExtractor:
                  wearable_variables=['HEART_RATE', 'HEART_RATE_VARIABILITY', 'PULSE_OX', 'STEPS'],
                  daily_step_target=10000,
                  hr_activity_hrr_intensity=0.4, # 40% of Heart Rate Reserve for light/moderate activity
-                 hr_activity_derivative_threshold=3.0): # 3 bpm/minute increase
+                 #hr_activity_derivative_threshold=3.0 # 3 bpm/minute increase
+                 ): 
         """
         Inizializza l'estrattore di feature.
 
@@ -64,7 +65,7 @@ class PostprandialFeatureExtractor:
         self.WEARABLE_VARIABLES = wearable_variables
         self.DAILY_STEP_TARGET = daily_step_target
         self.HR_ACTIVITY_HRR_INTENSITY = hr_activity_hrr_intensity
-        self.HR_ACTIVITY_DERIVATIVE_THRESHOLD = hr_activity_derivative_threshold
+        #self.HR_ACTIVITY_DERIVATIVE_THRESHOLD = hr_activity_derivative_threshold
 
 
     def _load_glucose_df_for_subject(self, subject_id):
@@ -280,11 +281,17 @@ class PostprandialFeatureExtractor:
        Returns:
            pd.Series: A binary series with 1s for active periods and 0s otherwise.
        """
-       # Calculate the heart rate derivative (rate of change per minute)
-       hr_derivative = hr_window.diff() / (hr_window.index.to_series().diff().dt.total_seconds() / 60.0)
+       # # Calculate the heart rate derivative (rate of change per minute)
+       # hr_derivative = hr_window.diff() / (hr_window.index.to_series().diff().dt.total_seconds() / 60.0)
+       
+       # # Create a boolean mask where both activity conditions are met
+       # is_active_mask = (hr_window > personalized_hr_threshold) & (hr_derivative > self.HR_ACTIVITY_DERIVATIVE_THRESHOLD)
+       
+       # # Convert the boolean mask to a binary series of 1s and 0s
+       # activity_series = is_active_mask.astype(int)
        
        # Create a boolean mask where both activity conditions are met
-       is_active_mask = (hr_window > personalized_hr_threshold) & (hr_derivative > self.HR_ACTIVITY_DERIVATIVE_THRESHOLD)
+       is_active_mask = (hr_window > personalized_hr_threshold) 
        
        # Convert the boolean mask to a binary series of 1s and 0s
        activity_series = is_active_mask.astype(int)
