@@ -12,8 +12,10 @@ from src.data_preparation.dataset_preparer import DatasetPreparer
 from src.feature_extraction.postprandial_feature_extractor import PostprandialFeatureExtractor
 from src.data_visualization.data_visualizer import DataVisualizer
 from src.data_analysis.feature_analyzer import FeatureAnalyzer
+import pandas as pd
 
 plt.close('all')
+
 
 def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualization=True, 
                  visualize_preparation_steps=False, run_data_analysis = False):
@@ -72,9 +74,14 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     }
     
     # --- Parametri Specifici per DataVisualizer ---
+    # Switch to easily change between analysis modes
+    ANALYSIS_MODE = 'classification'  # Options: 'classification' or 'regression'
+
     ANALIZER_PARAMS = {
         "data_file_path":os.path.join(COMMON_PARAMS["data_dir_db"],EXTRACTOR_PARAMS["output_filename_with_features"]), 
-        "target_column":'target_hypoglycemia',
+        "analysis_type": ANALYSIS_MODE,
+        "classification_target": 'target_hypoglycemia',
+        "regression_target": 'postprandial_glucose_min',
     }
 
     if run_preparation:
@@ -102,207 +109,217 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         visualizer.run_interactive_visualizer()
     
     if run_data_analysis:
-        print("\n--- Fase 3: Analisi Esplorativa delle Feature ---")
+        print(f"\n--- Fase 4: Analisi Esplorativa delle Feature ({ANALYSIS_MODE.capitalize()}) ---")
         analyzer = FeatureAnalyzer(**ANALIZER_PARAMS)
         
-        #1. Filtrs data for the analysis
-        filter_conditions = [
+        
+        # Switch to control the inclusion of meals with sensor saturation
+        EXCLUDE_SATURATION_EVENTS = False
+
+        if analyzer.df is not None and 'is_saturated_at_39' in analyzer.df.columns:
+            total_meals = len(analyzer.df)
+            saturation_event_count = analyzer.df['is_saturated_at_39'].sum()
+            print(f"\nInitial meal events loaded for analysis: {total_meals}")
+            print(f"Among these, {saturation_event_count} events include sensor saturation (glucose at 39 mg/dL).")
+
+            if EXCLUDE_SATURATION_EVENTS:
+                print(">>> EXCLUDING saturation events from the analysis.")
+                analyzer.filter_data([{'column': 'is_saturated_at_39', 'operator': '==', 'value': 0}])
+                print(f"Meal events remaining for analysis: {len(analyzer.df)}")
+            else:
+                print(">>> INCLUDING saturation events in the analysis.")
+            
+        
+        
+        print("\n--- Target Distribution (Before Any Filtering) ---")
+        if analyzer.df is not None:
+            print(analyzer.df['target_hypoglycemia'].value_counts(dropna=False))
+        
+        # 1. Apply filters
+        # SPLITTING FILTERS 
+        # Define non-wearable (physiological) filters
+        non_wearable_filters = [
             {'column': 'hypo_to_check_flag', 'operator': '!=', 'value': 0},
             {'column': 'postprandial_duration_minutes', 'operator': '>', 'value': 120},
             {'column': 'time_peak_hypo_event', 'operator': '>', 'value': -1}, # -1 è il flag che consente di selezionare anche i pasti che non vanno in ipo 
             {'column': 'rate_of_increase', 'operator': '>', 'value': 0},
             {'column': 'glucose_derivative_15min_before_peak1', 'operator': '>', 'value': 0},
             {'column': 'glucose_derivative_15min_after_peak1', 'operator': '<', 'value': 0},
-            {'column': 'has_heart_rate_data', 'operator': '==', 'value': 1}, # ADDED FILTER TO KEEP ONLY SUBJECTS WITH HEART_RATE DATA
-            {'column': 'has_pulse_ox_data', 'operator': '==', 'value': 1}, # Filters for the other wearable data
+        ]
+
+        # Define wearable filters
+        wearable_filters = [
+            {'column': 'has_heart_rate_data', 'operator': '==', 'value': 1},
+            {'column': 'has_pulse_ox_data', 'operator': '==', 'value': 1},
             {'column': 'has_steps_data', 'operator': '==', 'value': 1},
-            ]
-        analyzer.filter_data(filter_conditions)
-        # debug
-        #a = analyzer.df;
-        #b = a.where((a['target_hypoglycemia'] == 2))
-        #c = b.where(b['glucose_derivative_15min_after_peak1'] > 0)
+        ]
+        
+        # APPLY FILTERS IN STAGES
+        # Apply the non-wearable filters
+        print("\nApplying non-wearable filters...")
+        analyzer.filter_data(non_wearable_filters)
+        
+        # Print the distribution *before* applying wearable filters
+        print("\n--- Target Distribution (After Non-Wearable Filters) ---")
+        if analyzer.df is not None:
+            print(analyzer.df['target_hypoglycemia'].value_counts(dropna=False))
+        
+        # Apply the wearable filters
+        print("\nApplying wearable filters...")
+        analyzer.filter_data(wearable_filters)
+
+        # Print the final distribution *after* applying wearable filters
+        print("\n--- Target Distribution (After Wearable Filters) ---")
+        if analyzer.df is not None:
+            print(analyzer.df['target_hypoglycemia'].value_counts(dropna=False))
+            
+            
         
         # 2. Show basic info and missing values
         analyzer.display_basic_info()
         
-        # 3. Plotcorrelations divided by logic groups
-        print("\n--- Generating Grouped Correlation Heatmaps ---")
-        
-        # Generates a heatmap with all the features
-        analyzer.plot_correlations(
-            output_path='correlation_heatmap_full.png'
-        )
-        
-        # Original heatmap
-        all_analyzable_features = analyzer._get_features_for_analysis()
-        
-        # Define the list of features to exclude
-        postprandial_exclusions = [
-            'postprandial_mean_glucose',
-            'postprandial_std_glucose',
-            'postprandial_range',
-            'postprandial_tir_target',
-            'postprandial_tir_l1_hyper',
-            'postprandial_tir_l2_hyper',
-            'postprandial_tir_l1_hypo',
-            'postprandial_tir_l2_hypo',
-        ]
-        
-        # Create the feature group 
-        original_features_group = [
-            f for f in all_analyzable_features
-            if 'hr_' not in f and 'cv_' not in f  and 'pulse_ox_' not in f and f not in postprandial_exclusions
-        ]
-       
-        analyzer.plot_focused_correlation(
-            original_features_group,
-            title='Original Glucose-Based Features Hetmap',
-            output_path='correlation_heatmap_original_features.png',
-            annotate_cells=False
-        )
-
-
-        # Group 1: Postprandial Response Summary
-        postprandial_group = [
-            'postprandial_mean_glucose', 'postprandial_std_glucose', 'rate_of_increase',
-            'first_glucose_peak_value_after_meal', 'time_to_first_glucose_peak_after_meal', 'postprandial_tir_l1_hypo',
-            'hr_mean', 'hr_std', 'hr_slope', 'hr_variability'
-        ]
-        analyzer.plot_focused_correlation(
-            postprandial_group,
-            title='Focused Heatmap: Postprandial Response (Glucose vs. HR)',
-            output_path='correlation_heatmap_postprandial.png',
-            annotate_cells=True
-        )
-
-        # Group 2: Pre-Meal Glucose State (1h, 6h, 24h)
-        pre_meal_glucose_group = [
-            'mean_glucose_1h_pre_meal', 'cv_glucose_1h_pre_meal', 'num_positive_peaks_1h_pre_meal',
-            'mean_glucose_6h_pre_meal', 'cv_glucose_6h_pre_meal', 'num_positive_peaks_6h_pre_meal',
-            'mean_glucose_24h_pre_meal', 'cv_glucose_24h_pre_meal', 'num_positive_peaks_24h_pre_meal'
-        ]
-        analyzer.plot_focused_correlation(
-            pre_meal_glucose_group,
-            title='Focused Heatmap: Pre-Meal Glucose State',
-            output_path='correlation_heatmap_pre_meal_glucose.png',
-            annotate_cells=True
-        )
-        
-        # Group 3: Pre-Meal Heart Rate State (1h, 6h, 24h)
-        pre_meal_hr_group = [
-            'hr_mean_1h_pre_meal', 'hr_std_1h_pre_meal', 'hr_slope_1h_pre_meal', 'hr_variability_1h_pre_meal',
-            'hr_mean_6h_pre_meal', 'hr_std_6h_pre_meal', 'hr_slope_6h_pre_meal', 'hr_variability_6h_pre_meal',
-            'hr_mean_24h_pre_meal', 'hr_std_24h_pre_meal', 'hr_slope_24h_pre_meal', 'hr_variability_24h_pre_meal'
-        ]
-        analyzer.plot_focused_correlation(
-            pre_meal_hr_group,
-            title='Focused Heatmap: Pre-Meal Heart Rate State',
-            output_path='correlation_heatmap_pre_meal_hr.png',
-            annotate_cells=True
-        )
-        
-        # Group 4: Pulse Ox Summary
-        pulse_ox_group = [
-            'pulse_ox_mean', 'pulse_ox_std', 'pulse_ox_range',
-            'pulse_ox_mean_1h_pre_meal', 'pulse_ox_std_1h_pre_meal',
-            'pulse_ox_mean_6h_pre_meal', 'pulse_ox_std_6h_pre_meal'
-        ]
-        analyzer.plot_focused_correlation(
-            pulse_ox_group,
-            title='Focused Heatmap: Pulse Ox Summary',
-            output_path='correlation_heatmap_pulse_ox.png'
-        )
-        
-        # Group 5: Pre-Meal Pulse Ox State
-        pre_meal_pulse_ox_group = [
-            'pulse_ox_mean_1h_pre_meal', 'pulse_ox_std_1h_pre_meal', 'pulse_ox_range_1h_pre_meal',
-            'pulse_ox_mean_3h_pre_meal', 'pulse_ox_std_3h_pre_meal', 'pulse_ox_range_3h_pre_meal',
-            'pulse_ox_mean_6h_pre_meal', 'pulse_ox_std_6h_pre_meal', 'pulse_ox_range_6h_pre_meal',
-            'pulse_ox_mean_12h_pre_meal', 'pulse_ox_std_12h_pre_meal', 'pulse_ox_range_12h_pre_meal',
-            'pulse_ox_mean_24h_pre_meal', 'pulse_ox_std_24h_pre_meal', 'pulse_ox_range_24h_pre_meal'
-        ]
-        analyzer.plot_focused_correlation(
-            pre_meal_pulse_ox_group,
-            title='Focused Heatmap: Pre-Meal Pulse Ox State',
-            output_path='correlation_heatmap_pre_meal_pulse_ox.png'
-        )
-        
-        # Group 6: Pre-Meal Physiological State (1-Hour Window)
-        pre_meal_state_1h_group = [
-            'mean_glucose_1h_pre_meal', 'std_glucose_1h_pre_meal',
-            'hr_mean_1h_pre_meal', 'hr_variability_1h_pre_meal',
-            'pulse_ox_mean_1h_pre_meal', 'pulse_ox_std_1h_pre_meal'
-        ]
-        analyzer.plot_focused_correlation(
-            pre_meal_state_1h_group,
-            title='Focused Heatmap: Pre-Meal Physiological State (1-Hour Window)',
-            output_path='correlation_heatmap_pre_meal_1h_state.png'
-        )
-
-        # Group 7: Predictive Features (Pre- vs. Post-Meal) 
-        predictive_group = [
-            'mean_glucose_1h_pre_meal', 'hr_variability_1h_pre_meal', 'pulse_ox_mean_1h_pre_meal', # Pre-meal state
-            'postprandial_tir_l1_hypo', 'first_glucose_peak_value_after_meal', 'postprandial_mean_glucose', 'hr_slope' # Post-meal outcome
-        ]
-        analyzer.plot_focused_correlation(
-            predictive_group,
-            title='Focused Heatmap: Predictive Features (Pre-Meal vs. Post-Meal Outcome)',
-            output_path='correlation_heatmap_predictive.png'
-        )
-        
-        # Group 8: Core Metrics Summary 
-        core_metrics_group = [
-            'meal_hour',
-            'mean_glucose_1h_pre_meal', 'std_glucose_1h_pre_meal', 'hr_variability_1h_pre_meal', 'pulse_ox_mean_1h_pre_meal',
-            'rate_of_increase', 'first_glucose_peak_value_after_meal',
-            'postprandial_mean_glucose', 
-            'postprandial_tir_l1_hypo', 'postprandial_tir_l2_hypo',
-            'hr_slope', 'hr_variability', 'pulse_ox_mean', 'pulse_ox_range',
-            'daily_step_target_reached',
-            'hr_prop_time_active_1h_pre_meal',
-        ]
-        analyzer.plot_focused_correlation(
-            core_metrics_group,
-            title='Core Metrics Correlation Heatmap',
-            output_path='correlation_heatmap_core_metrics.png'
-        )
-        
-        # Group 9: New Hypoglycemia Predictors group
-        hypoglycemia_predictors_group = [
-            'daily_step_target_reached',
-            'hr_prop_time_active_1h_pre_meal',
-            'mean_glucose_1h_pre_meal',
-            'std_glucose_1h_pre_meal',
-            'hr_variability_1h_pre_meal',
-            'postprandial_tir_l1_hypo',
-            'postprandial_tir_l2_hypo',
-            'postprandial_hypo_duration_minutes'
-        ]
-        analyzer.plot_focused_correlation(
-            hypoglycemia_predictors_group,
-            title='Focused Heatmap: Hypoglycemia Predictors',
-            output_path='correlation_heatmap_hypoglycemia_predictors.png'
-        )
-        
-        # Group 10: Activity & Pre-Meal State
-        activity_pre_meal_group = [
-            'daily_step_target_reached', 'hr_prop_time_active_1h_pre_meal', 'mean_glucose_1h_pre_meal',
-            'std_glucose_1h_pre_meal', 'hr_variability_1h_pre_meal', 'pulse_ox_mean_1h_pre_meal'
-        ]
-        analyzer.plot_focused_correlation(
-            activity_pre_meal_group,
-            title='Focused Heatmap: Activity & Pre-Meal State',
-            output_path='correlation_heatmap_activity_pre_meal.png'
-        )
-
-
+        # Run analysis based on the selected mode
+        if ANALYSIS_MODE == 'classification':
+            print("\n--- Running Classification Analysis ---")
+            # Box Plots
+            analyzer.plot_distributions_by_target(num_cols_per_plot=3)
             
-        # 4. Plot features distribution
-        analyzer.plot_feature_distributions(num_cols_per_plot=5) # number of columns
+            # Call the statistical test method 
+            # Step 1: Run the main statistical tests
+            significant_features = analyzer.run_classification_tests()
+            
+            # Step 2: If there are significant features, run the post-hoc tests
+            if significant_features is not None and not significant_features.empty:
+                posthoc_results = analyzer.run_posthoc_tests(significant_features)
+            
+                # --- Heatmap 1: Top 25 Most Significant Features ---
+                print("\n--- Generating Correlation Heatmap for Top 25 Classification Features ---")
+                top_class_features = significant_features['Feature'].head(25).tolist()
+                analyzer.plot_focused_correlation(
+                    feature_list=top_class_features,
+                    title='Correlation of Top 25 Classification Features',
+                    figsize=(20, 18),
+                    annotate_cells=True,
+                    output_path='heatmap_top25_classification.png'
+                )
+
+                # --- Heatmap 2: Top 35 Less-Correlated Features ---
+                print("\n--- Generating Correlation Heatmap for Top 25 Less-Correlated Features ---")
+                
+                # Step 1: Get the wide-format pairwise results using our new helper
+                pairwise_results_df = analyzer.get_pairwise_comparison_results(significant_features)
+
+                if pairwise_results_df is not None and not pairwise_results_df.empty:
+                    # Step 2: Find features where ALL pairwise p-values are < 0.05
+                    p_value_cols = [col for col in pairwise_results_df.columns if 'P-Value' in col]
+                    strict_df = pairwise_results_df.dropna(subset=p_value_cols)
+                    strict_df = strict_df[(strict_df[p_value_cols] < 0.05).all(axis=1)]
+                   
+                    fully_significant_list = strict_df['Feature'].tolist()
+                    print(f"Found {len(fully_significant_list)} features that are significant across all pairwise comparisons.")
+
+                    if fully_significant_list:
+                        # Step 3: Filter the original significant features list to maintain the correct order and stats
+                        strict_significant_features = significant_features[significant_features['Feature'].isin(fully_significant_list)]
+
+                        # Step 4: Select uncorrelated features from this STRICT list
+                        uncorrelated_features = analyzer.select_uncorrelated_features(
+                            strict_significant_features, 
+                            top_n=25,
+                            threshold=0.8
+                        )
+                       
+                        # Step 5: Plot the new heatmap
+                        if uncorrelated_features and len(uncorrelated_features) > 1:
+                            analyzer.plot_focused_correlation(
+                                feature_list=uncorrelated_features,
+                                title='Correlation of Top 25 Strictly Significant & Less-Correlated Features',
+                                figsize=(24, 22),
+                                annotate_cells=True,
+                                output_path='heatmap_top25_uncorrelated_strict.png'
+                            )
+                        
+                        
+                        # Summary Table from Statistical Tests with the most significant and less correlated features
+                        print("\n\n" + "="*80)
+                        print(" " * 15 + "STATISTICAL SUMMARY FOR UNCORRELATED HEATMAP FEATURES")
+                        print("="*80)
+
+                        # 1. Filter and print the omnibus test results (ANOVA/Kruskal-Wallis)
+                        final_omnibus_summary = significant_features[significant_features['Feature'].isin(uncorrelated_features)]
+                        print("\n--- Omnibus Test Results (ANOVA / Kruskal-Wallis) ---")
+                        print(final_omnibus_summary)
+
+                        # 2. Filter and print the pairwise post-hoc results
+                        if posthoc_results is not None and not posthoc_results.empty:
+                            final_posthoc_summary = posthoc_results[posthoc_results['Feature'].isin(uncorrelated_features)]
+                            # For better readability, sort by the original feature significance order
+                            final_posthoc_summary['Feature'] = pd.Categorical(final_posthoc_summary['Feature'], categories=uncorrelated_features, ordered=True)
+                            print("\n--- Pairwise Post-Hoc Test Results (Games-Howell / Dunn) ---")
+                            print(final_posthoc_summary.sort_values('Feature'))
+                        
+                        print("\n" + "="*80 + "\n")
+                
+       
+        elif ANALYSIS_MODE == 'regression':
+            print("\n--- Running Regression Analysis ---")
+            # Plot feature vs. target scatter plots
+            analyzer.plot_distributions_by_target(num_cols_per_plot=3)
+            # Display features most correlated with the target
+            regression_results = analyzer.display_regression_correlations(top_n=25)
+            
+            # Generate heatmap for top regression features 
+            if regression_results is not None and not regression_results.empty:
+                
+                # --- Heatmap 1: Top 25 Most Significant Features ---
+                print("\n--- Generating Correlation Heatmap for Top 25 Regression Features ---")
+                top_reg_features = regression_results['Feature'].head(25).tolist()
+                analyzer.plot_focused_correlation(
+                    feature_list=top_reg_features,
+                    title='Correlation of Top 25 Regression Features',
+                    figsize=(20, 18),
+                    annotate_cells=True,
+                    output_path='heatmap_top25_regression.png'
+                )
+
+                # --- Heatmap 2: Top 35 Less-Correlated Features ---
+                print("\n--- Generating Correlation Heatmap for Top 25 Less-Correlated Regression Features ---")
+                uncorrelated_reg_features = analyzer.select_uncorrelated_features(
+                    regression_results,
+                    top_n=25,
+                    threshold=0.8
+                )
+                if uncorrelated_reg_features and len(uncorrelated_reg_features) > 1:
+                    analyzer.plot_focused_correlation(
+                        feature_list=uncorrelated_reg_features,
+                        title='Correlation of Top 25 Less-Correlated Regression Features (Threshold=0.8)',
+                        figsize=(24, 22),
+                        annotate_cells=True,
+                        output_path='heatmap_top35_uncorrelated_regression.png'
+                    )
+                
+                
+                    # Summary Table from Statistical Tests with the most significant and less correlated features
+                    print("\n\n" + "="*80)
+                    print(" " * 12 + "STATISTICAL SUMMARY FOR UNCORRELATED REGRESSION HEATMAP FEATURES")
+                    print("="*80)
+
+                    # 1. Filter and print the regression correlation results
+                    final_regression_summary = regression_results[regression_results['Feature'].isin(uncorrelated_reg_features)]
+                    print("\n--- Pearson Correlation Results ---")
+                    print(final_regression_summary)
+                    
+                    print("\n" + "="*80 + "\n")
+                    
+   
+        # Steps Plots
+        print("\n--- Plotting Step Distributions by Meal Category ---")
+        analyzer.plot_postmeal_steps_by_meal_category()
+        analyzer.plot_steps_by_meal_category()
         
-        # 5. Plot features distribution by target
-        analyzer.plot_distributions_by_target(num_cols_per_plot=3)
+        
+        
+        
         
 if __name__ == "__main__":
    
@@ -311,5 +328,5 @@ if __name__ == "__main__":
         visualize_preparation_steps = False, # Imposta a True per vedere i plot durante la preparazione (può essere molto verboso)
         run_feature_extraction = False, # Esegui l'estrazione delle feature
         run_visualization = False, # Avvia il visualizzatore interattivo
-        run_data_analysis = True, # Per il momento fa solo boxplot delle tre classi
+        run_data_analysis = True  , 
     )

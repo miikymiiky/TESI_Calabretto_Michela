@@ -32,7 +32,12 @@ class PostprandialFeatureExtractor:
                  wearable_variables=['HEART_RATE', 'HEART_RATE_VARIABILITY', 'PULSE_OX', 'STEPS'],
                  daily_step_target=10000,
                  hr_activity_hrr_intensity=0.4, # 40% of Heart Rate Reserve for light/moderate activity
-                 #hr_activity_derivative_threshold=3.0 # 3 bpm/minute increase
+                 min_cadence_for_activity=20,
+                 hr_activity_hrr_intensities={
+                     'light': [0.3, 0.39],
+                     'moderate': [0.4, 0.59],
+                     'vigorous': [0.6, 0.89]
+                 }
                  ): 
         """
         Inizializza l'estrattore di feature.
@@ -65,7 +70,8 @@ class PostprandialFeatureExtractor:
         self.WEARABLE_VARIABLES = wearable_variables
         self.DAILY_STEP_TARGET = daily_step_target
         self.HR_ACTIVITY_HRR_INTENSITY = hr_activity_hrr_intensity
-        #self.HR_ACTIVITY_DERIVATIVE_THRESHOLD = hr_activity_derivative_threshold
+        self.MIN_CADENCE_FOR_ACTIVITY = min_cadence_for_activity
+        self.HR_ACTIVITY_HRR_INTENSITIES = hr_activity_hrr_intensities
 
 
     def _load_glucose_df_for_subject(self, subject_id):
@@ -108,6 +114,8 @@ class PostprandialFeatureExtractor:
                     # Convert the 'Time' column using the correct format
                     df['Time'] = pd.to_datetime(df['Time'], format='%d-%b-%Y %H:%M:%S', errors='coerce')
                     df.set_index('Time', inplace=True)
+                    
+                    df.sort_index(inplace=True)
                 
                     all_wearable_data[var_name] = df
                 except Exception as e:
@@ -128,11 +136,13 @@ class PostprandialFeatureExtractor:
             
         is_hypo = 0
         hypo_time = np.nan
-        hypo_duration = 0
+        hypo_duration = np.nan
+        #hypo_duration = 0
 
         is_deep_hypo = 0
         deep_hypo_time = np.nan
-        deep_hypo_duration = 0
+        deep_hypo_duration = np.nan
+        #deep_hypo_duration = 0
 
         # Rilevamento ipoglicemia
         hypo_segments = (period_glucose < self.HYPO_THRESHOLD).astype(int).groupby((period_glucose < self.HYPO_THRESHOLD).astype(int).diff().ne(0).cumsum()).filter(lambda x: len(x) >= self.MIN_CONSECUTIVE_SAMPLES_HYPO and x.iloc[0] == 1)
@@ -227,6 +237,98 @@ class PostprandialFeatureExtractor:
             time_to_peak1 = (main_peak_time - meal_start_time).total_seconds()/60
         
         return peak1_val, time_to_peak1, peak2_val, time_to_peak2
+    
+    
+    def _calculate_excursion_metrics(self, glucose_series, condition, min_samples_for_event=1):
+        """
+        Calculates the number and total duration of glycemic excursions.
+        An excursion is a consecutive block of samples meeting a certain condition.
+
+        Args:
+            glucose_series (pd.Series): The glucose data for the window.
+            condition (lambda): A function that returns True for values in the excursion range (e.g., lambda g: g > 180).
+            min_samples_for_event (int): The minimum number of consecutive samples to be considered a valid event.
+
+        Returns:
+            tuple: A tuple containing (event_count, total_duration_minutes).
+        """
+        if glucose_series.empty or glucose_series.isnull().all():
+            return 0, 0
+
+        in_excursion = condition(glucose_series.dropna())
+        if in_excursion.empty:
+            return 0, 0
+            
+        excursion_groups = in_excursion.ne(in_excursion.shift()).cumsum() # ne(shift()) finds where the True/False state changes
+                                                                          # cumsum() assigns a group number to each block
+        true_excursion_blocks = excursion_groups[in_excursion] # filter only True blocks
+        if true_excursion_blocks.empty:
+            return 0, 0
+
+        block_sizes = true_excursion_blocks.value_counts() # value_counts() is a pandas method that counts how many True samples are in each block
+        valid_events = block_sizes[block_sizes >= min_samples_for_event]
+        event_count = len(valid_events)
+        total_duration_minutes = valid_events.sum() * self.SAMPLING_INTERVAL_MINUTES
+
+        return event_count, total_duration_minutes
+    
+    
+    def _calculate_mage(self, glucose_series: pd.Series) -> float: # -> float specifies that the function is expected to return a float value
+        """
+        Calculates the Mean Amplitude of Glycemic Excursions (MAGE).
+        This implementation follows the automated algorithm for CGM signals. 
+        """
+        if glucose_series.empty or glucose_series.isnull().all():
+            return np.nan
+
+        # 1. Identify local extrema (turning points)
+        glucose_values = glucose_series.dropna().values
+        if len(glucose_values) < 3:
+            return np.nan
+
+        peaks, _ = find_peaks(glucose_values)
+        troughs, _ = find_peaks(-glucose_values)
+        turning_points_indices = np.sort(np.concatenate([peaks, troughs]))
+
+        if len(turning_points_indices) < 2:
+            return np.nan
+
+        # 2. Calculate excursions between turning points
+        excursions = np.abs(np.diff(glucose_values[turning_points_indices]))
+        
+        # 3. Filter for significant excursions (greater than the overall SD of the series)
+        series_std = glucose_series.std()
+        if pd.isna(series_std) or series_std == 0:
+            return 0.0
+            
+        significant_excursions = excursions[excursions > series_std]
+
+        if len(significant_excursions) == 0:
+            return 0.0
+            
+        # 4. MAGE is the mean of these significant excursions 
+        return np.mean(significant_excursions)
+    
+    
+    def _calculate_short_time_features(self, glucose_series: pd.Series):
+        """
+        Calculates short-time features based on the Glucose Rate of Change (ROC). 
+        """
+        features = {'lastROC': np.nan, 'meanROC': np.nan}
+        
+        if len(glucose_series.dropna()) < 4: # Need at least 4 samples for a 15-min diff
+            return features
+            
+        # ROC is the difference between the current sample and the one 15 mins prior (3 samples ago) divided by 15 minutes
+        roc_series = (glucose_series - glucose_series.shift(3)) / 15.0
+        
+        if roc_series.dropna().empty:
+            return features
+
+        features['lastROC'] = roc_series.iloc[-1]
+        features['meanROC'] = roc_series.mean()
+        
+        return features
 
 
     def _calculate_pre_meal_metrics(self, glucose_series_filtered, meal_start_time, first_glucose_timestamp):
@@ -236,7 +338,17 @@ class PostprandialFeatureExtractor:
         
         for interval_hours in self.PRE_MEAL_INTERVALS_HOURS:
             interval_name = f"{interval_hours}h_pre_meal"
-            keys_to_init = [f'mean_glucose_{interval_name}', f'std_glucose_{interval_name}', f'cv_glucose_{interval_name}', f'min_glucose_{interval_name}', f'max_glucose_{interval_name}', f'range_{interval_name}', f'prop_above_130_{interval_name}', f'prop_80_130_{interval_name}', f'prop_50_80_{interval_name}', f'prop_below_50_{interval_name}', f'num_positive_peaks_{interval_name}', f'num_negative_peaks_{interval_name}']
+            keys_to_init = [
+                f'mean_glucose_{interval_name}', f'std_glucose_{interval_name}', f'cv_glucose_{interval_name}', f'min_glucose_{interval_name}', f'max_glucose_{interval_name}', f'range_{interval_name}', 
+                f'prop_above_130_{interval_name}', f'prop_80_130_{interval_name}', f'prop_50_80_{interval_name}', f'prop_below_50_{interval_name}', f'num_positive_peaks_{interval_name}', f'num_negative_peaks_{interval_name}',
+                f'num_deep_hypo_events_{interval_name}', f'duration_deep_hypo_minutes_{interval_name}',
+                
+                f'num_hypo_events_{interval_name}', f'duration_hypo_minutes_{interval_name}',
+                f'num_hyper_events_{interval_name}', f'duration_hyper_minutes_{interval_name}',
+                f'num_total_hypo_events_{interval_name}', f'duration_total_hypo_minutes_{interval_name}',
+                
+                f'lbgi_{interval_name}', f'hbgi_{interval_name}'
+            ]
             for key in keys_to_init:
                 metrics[key] = np.nan
 
@@ -267,39 +379,70 @@ class PostprandialFeatureExtractor:
             negative_peaks, _ = find_peaks(-pre_meal_glucose.dropna().values, prominence=self.PEAK_PROMINENCE_PRE_MEAL, distance=min_distance_samples_pre_meal)
             metrics[f'num_negative_peaks_{interval_name}'] = len(negative_peaks)
             
+            # This block calculates the new event-based features using the helper method
+            # Define conditions for different event types
+            deep_hypo_cond = lambda g: g < self.DEEP_HYPO_THRESHOLD  # < 54
+            hypo_cond = lambda g: (g >= self.DEEP_HYPO_THRESHOLD) & (g < self.HYPO_THRESHOLD) # 54-70
+            hyper_cond = lambda g: g > 130 # Threshold for hyperglycemia
+
+            # Calculate metrics for each event type, requiring at least 3 samples (15 mins)
+            num_deep, dur_deep = self._calculate_excursion_metrics(pre_meal_glucose, deep_hypo_cond, 3)
+            num_hypo, dur_hypo = self._calculate_excursion_metrics(pre_meal_glucose, hypo_cond, 3)
+            num_hyper, dur_hyper = self._calculate_excursion_metrics(pre_meal_glucose, hyper_cond, 3)
+            
+            metrics[f'num_deep_hypo_events_{interval_name}'] = num_deep
+            metrics[f'duration_deep_hypo_minutes_{interval_name}'] = dur_deep
+            metrics[f'num_hypo_events_{interval_name}'] = num_hypo
+            metrics[f'duration_hypo_minutes_{interval_name}'] = dur_hypo
+            metrics[f'num_hyper_events_{interval_name}'] = num_hyper
+            metrics[f'duration_hyper_minutes_{interval_name}'] = dur_hyper
+            
+            # Calculate the "Total Hypo" features by summing the deep and regular hypo metrics
+            metrics[f'num_total_hypo_events_{interval_name}'] = num_deep + num_hypo
+            metrics[f'duration_total_hypo_minutes_{interval_name}'] = dur_deep + dur_hypo
+            
+            
+            # LBGI, HBGI, BGRI and ADRR Calculation
+            glucose_for_risk = pre_meal_glucose.dropna()
+            if not glucose_for_risk.empty:
+                # Keep only positive glucose values for the log
+                glucose_for_risk = glucose_for_risk[glucose_for_risk > 0]
+                if not glucose_for_risk.empty:
+                    # Calculate f(g)
+                    f_g = 1.509 * (np.log(glucose_for_risk)**1.084 - 5.381)
+                    # Calculate r(g)
+                    r_g = 10 * (f_g**2)
+                    
+                    # Calculate LBGI
+                    low_risk_values = r_g[f_g < 0]
+                    if not low_risk_values.empty:
+                        metrics[f'lbgi_{interval_name}'] = low_risk_values.mean()
+                        
+                    # Calculate HBGI
+                    high_risk_values = r_g[f_g > 0]
+                    if not high_risk_values.empty:
+                        metrics[f'hbgi_{interval_name}'] = high_risk_values.mean()
+                    
+                    # Calculate BGRI as LBGI + HBGI 
+                    if pd.notna(metrics.get(f'lbgi_{interval_name}')) and pd.notna(metrics.get(f'hbgi_{interval_name}')):
+                        metrics[f'bgri_{interval_name}'] = metrics[f'lbgi_{interval_name}'] + metrics[f'hbgi_{interval_name}']
+
+                    # Calculate ADRR from the same risk values [cite: 311]
+                    if not low_risk_values.empty and not high_risk_values.empty:
+                        metrics[f'ADRR_{interval_name}'] = low_risk_values.max() + high_risk_values.max()
+            
+            # MAGE Calculation
+            metrics[f'MAGE_{interval_name}'] = self._calculate_mage(pre_meal_glucose)
+
+            # J-Index Calculation 
+            if pre_meal_glucose.mean() > 0 and pre_meal_glucose.std() > 0:
+                metrics[f'J_index_{interval_name}'] = 0.001 * (pre_meal_glucose.mean() + pre_meal_glucose.std())**2
+
+            
         return metrics
     
     
-    def _detect_physical_activity(self, hr_window, personalized_hr_threshold):
-       """
-       Detects physical activity and returns a binary series (1=active, 0=not active).
-
-       Args:
-           hr_window (pd.Series): Series of heart rate values for a specific time window.
-           personalized_hr_threshold (float): The subject-specific HR threshold for activity.
-
-       Returns:
-           pd.Series: A binary series with 1s for active periods and 0s otherwise.
-       """
-       # # Calculate the heart rate derivative (rate of change per minute)
-       # hr_derivative = hr_window.diff() / (hr_window.index.to_series().diff().dt.total_seconds() / 60.0)
-       
-       # # Create a boolean mask where both activity conditions are met
-       # is_active_mask = (hr_window > personalized_hr_threshold) & (hr_derivative > self.HR_ACTIVITY_DERIVATIVE_THRESHOLD)
-       
-       # # Convert the boolean mask to a binary series of 1s and 0s
-       # activity_series = is_active_mask.astype(int)
-       
-       # Create a boolean mask where both activity conditions are met
-       is_active_mask = (hr_window > personalized_hr_threshold) 
-       
-       # Convert the boolean mask to a binary series of 1s and 0s
-       activity_series = is_active_mask.astype(int)
-       
-       return activity_series
-    
-    
-    def _extract_heart_rate_features(self, heart_rate_df, start_time, end_time, personalized_hr_threshold):
+    def _calculate_hr_features_for_window(self, heart_rate_df, start_time, end_time, personalized_hr_threshold):
         """
         Calculates descriptive statistics and dynamics for the heart rate
         in the postprandial window.
@@ -310,7 +453,7 @@ class PostprandialFeatureExtractor:
             'hr_min': np.nan,
             'hr_max': np.nan,
             'hr_range': np.nan,
-            'hr_slope': np.nan, # to measures the direction and rate of change of the heart rate
+            'hr_mean_derivative': np.nan,
             'hr_variability': np.nan, # RMSSD =  Root Mean Square of Successive Differences 
         }
 
@@ -335,21 +478,13 @@ class PostprandialFeatureExtractor:
         successive_diffs = np.diff(hr_window.values)
         if len(successive_diffs) > 0:
             features['hr_variability'] = np.sqrt(np.mean(successive_diffs ** 2))
-        
-        # Slope
-        # Create a numeric time variable (seconds from start)
-        time_in_minutes = (hr_window.index - hr_window.index[0]).total_seconds() / 60
-        # Use numpy's polyfit to get the slope of a linear fit
-        slope, _ = np.polyfit(time_in_minutes, hr_window.values, 1)
-        features['hr_slope'] = slope
-        
-        # Physical Activity
-        # First get the binary series, then calculate the percentage
-        activity_series = self._detect_physical_activity(hr_window, personalized_hr_threshold)
-        if not activity_series.empty:
-            # The mean of a 0/1 series is the proportion of 1s
-            features['hr_prop_time_active'] = activity_series.mean() * 100
-
+            
+       # HR Abs Mean Derivative
+        time_diffs_minutes = hr_window.index.to_series().diff().dt.total_seconds() / 60.0
+        hr_diffs = hr_window.diff()
+        derivatives = hr_diffs.div(time_diffs_minutes).replace([np.inf, -np.inf], np.nan).dropna()
+        if not derivatives.empty:
+            features['hr_mean_derivative'] = derivatives.abs().mean()
 
         return features
     
@@ -370,8 +505,8 @@ class PostprandialFeatureExtractor:
             interval_start = max(interval_start, first_hr_timestamp)
 
             keys = [f'hr_mean_{interval_name}', f'hr_std_{interval_name}', f'hr_min_{interval_name}',
-                    f'hr_max_{interval_name}', f'hr_range_{interval_name}', f'hr_slope_{interval_name}',
-                    f'hr_variability_{interval_name}', f'hr_prop_time_active_{interval_name}'
+                    f'hr_max_{interval_name}', f'hr_range_{interval_name}', f'hr_mean_derivative_{interval_name}',
+                    f'hr_variability_{interval_name}', 
             ]
             
             for key in keys:
@@ -389,20 +524,17 @@ class PostprandialFeatureExtractor:
             metrics[f'hr_max_{interval_name}'] = hr_pre_meal_window.max()
             metrics[f'hr_range_{interval_name}'] = metrics[f'hr_max_{interval_name}'] - metrics[f'hr_min_{interval_name}']
 
+            # HR Variability
             successive_diffs = np.diff(hr_pre_meal_window.values)
             if len(successive_diffs) > 0:
                 metrics[f'hr_variability_{interval_name}'] = np.sqrt(np.mean(successive_diffs ** 2))
             
-            time_in_minutes = (hr_pre_meal_window.index - hr_pre_meal_window.index[0]).total_seconds() / 60.0
-            if time_in_minutes.nunique() > 1:
-                slope, _ = np.polyfit(time_in_minutes, hr_pre_meal_window.values, 1)
-                metrics[f'hr_slope_{interval_name}'] = slope
-            
-            # Physical Activity
-            # First get the binary series, then calculate the percentage
-            activity_series = self._detect_physical_activity(hr_pre_meal_window, personalized_hr_threshold)
-            if not activity_series.empty:
-                metrics[f'hr_prop_time_active_{interval_name}'] = activity_series.mean() * 100
+            # Abs Mean Derivative Calculation 
+            time_diffs_minutes = hr_pre_meal_window.index.to_series().diff().dt.total_seconds() / 60.0
+            hr_diffs = hr_pre_meal_window.diff()
+            derivatives = hr_diffs.div(time_diffs_minutes).replace([np.inf, -np.inf], np.nan).dropna()
+            if not derivatives.empty:
+                metrics[f'hr_mean_derivative_{interval_name}'] = derivatives.abs().mean()
 
         return metrics
     
@@ -464,16 +596,124 @@ class PostprandialFeatureExtractor:
         return metrics
     
     
-    def _calculate_daily_steps(self, steps_df):
+    # def _calculate_daily_steps(self, steps_df):
+    #     """
+    #     Calculates the total sum of steps for each day.
+    #     """
+    #     if steps_df is None or steps_df.empty:
+    #         return None
+    #     # Resample by calendar day ('D') and sum the steps
+    #     daily_steps = steps_df['STEPS'].resample('D').max()
+    #     return daily_steps
+    
+    
+    def _calculate_physical_activity_for_window(self, hr_df, steps_df, start_time, end_time, hr_rest, hrr):
         """
-        Calculates the total sum of steps for each day.
+        Detects physical activity and classifies its intensity based on combined HRR and step cadence.
         """
-        if steps_df is None or steps_df.empty:
-            return None
-        # Resample by calendar day ('D') and sum the steps
-        daily_steps = steps_df['STEPS'].resample('D').max()
-        return daily_steps
+        # Initialize results with NaN for metrics that are undefined when there is no activity
+        activity_metrics = {
+            'activity_proportion': np.nan,
+            'light_proportion': np.nan,
+            'moderate_proportion': np.nan,
+            'vigorous_proportion': np.nan,
+            'mean_cadence_when_active': np.nan,
+            'mean_cadence_light': np.nan,     
+            'mean_cadence_moderate': np.nan,  
+            'mean_cadence_vigorous': np.nan 
+        }
 
+        if hr_df is None or steps_df is None or hr_df.empty or steps_df.empty:
+            return activity_metrics
+
+        # Slice data for the specified window
+        # Create a boolean mask to select all rows within the time range
+        hr_mask = (hr_df.index >= start_time) & (hr_df.index <= end_time)
+        hr_window = hr_df.loc[hr_mask]['HEART_RATE'].dropna()
+        
+        steps_mask = (steps_df.index >= start_time) & (steps_df.index <= end_time)
+        steps_window = steps_df.loc[steps_mask]['STEPS'].dropna()
+
+        if hr_window.empty or steps_window.empty or len(hr_window) < 2 or len(steps_window) < 2:
+            return activity_metrics
+
+        # Resample to 1-minute frequency for alignment
+        hr_resampled = hr_window.resample('1min').ffill() # resample('1min') ---> resamples with a 1 minute frequence; if there's no original data in the one minute time slot, it puts NaN
+                                                          # ffill() ---> forward fill: if there's a NaN value after the resampling, it uses the last aviable value
+        steps_resampled = steps_window.resample('1min').ffill()
+        
+        # Calculate cadence (steps per minute)
+        cadence = steps_resampled.diff()
+        cadence[cadence < 0] = 0 # Prevent negative steps from counter resets (when the time window crosses midnight)
+
+        # Merge the two series on their common timestamp index
+        combined_df = pd.DataFrame({'HR': hr_resampled, 'Cadence': cadence}).dropna() # creates a new perfectly aligned DataFrame with Heart Rate and Cadence columns
+                                                                                      # .dropna() to remove the first row where cadence is NaN
+        if combined_df.empty:
+            return activity_metrics
+        
+        # Define HR thresholds for each intensity level using Heart Rate Reserve
+        thresholds = {
+            'light': (hrr * self.HR_ACTIVITY_HRR_INTENSITIES['light'][0]) + hr_rest,
+            'moderate': (hrr * self.HR_ACTIVITY_HRR_INTENSITIES['moderate'][0]) + hr_rest,
+            'vigorous': (hrr * self.HR_ACTIVITY_HRR_INTENSITIES['vigorous'][0]) + hr_rest
+        }
+        
+        # Create a mask to identify any movement
+        is_moving_mask = combined_df['Cadence'] > self.MIN_CADENCE_FOR_ACTIVITY
+
+        # Create masks for each intensity level, requiring movement
+        is_light_mask = (combined_df['HR'] >= thresholds['light']) & (combined_df['HR'] < thresholds['moderate']) & is_moving_mask
+        is_moderate_mask = (combined_df['HR'] >= thresholds['moderate']) & (combined_df['HR'] < thresholds['vigorous']) & is_moving_mask
+        is_vigorous_mask = (combined_df['HR'] >= thresholds['vigorous']) & is_moving_mask
+        
+        # Combine all levels to find any active period
+        is_active_mask = is_light_mask | is_moderate_mask | is_vigorous_mask
+        
+        if is_active_mask.any():
+            # Calculate proportion for each intensity level and the total
+            activity_metrics['light_proportion'] = is_light_mask.mean() * 100
+            activity_metrics['moderate_proportion'] = is_moderate_mask.mean() * 100
+            activity_metrics['vigorous_proportion'] = is_vigorous_mask.mean() * 100
+            activity_metrics['activity_proportion'] = is_active_mask.mean() * 100
+            
+            # Calculate overall mean cadence (only during active periods)
+            active_periods = combined_df[is_active_mask]
+            activity_metrics['mean_cadence_when_active'] = active_periods['Cadence'].mean()
+            
+            # Calculate mean cadence for each intensity level 
+            if is_light_mask.any():
+                activity_metrics['mean_cadence_light'] = combined_df[is_light_mask]['Cadence'].mean()
+            if is_moderate_mask.any():
+                activity_metrics['mean_cadence_moderate'] = combined_df[is_moderate_mask]['Cadence'].mean()
+            if is_vigorous_mask.any():
+                activity_metrics['mean_cadence_vigorous'] = combined_df[is_vigorous_mask]['Cadence'].mean()
+
+        return activity_metrics
+
+
+    def _extract_pre_meal_activity_features(self, hr_df, steps_df, meal_start_time, hr_rest, hrr):
+        """
+        A wrapper function to calculate activity features for all pre-meal intervals
+        by calling the generic window calculation method.
+        """
+        metrics = {}
+        for interval_hours in self.PRE_MEAL_INTERVALS_HOURS:
+            interval_name = f"{interval_hours}h_pre_meal"
+            interval_start = meal_start_time - pd.Timedelta(hours=interval_hours)
+            interval_end = meal_start_time
+
+            # Call the generic function for each pre-meal window
+            activity_metrics = self._calculate_physical_activity_for_window(
+                hr_df, steps_df, interval_start, interval_end, hr_rest, hrr
+            )
+            
+            # Add the results to the metrics dictionary with the correct prefix
+            for key, value in activity_metrics.items():
+                metrics[f'{key}_{interval_name}'] = value
+        
+        return metrics
+ 
     
     def extract_features(self):
         """
@@ -504,24 +744,64 @@ class PostprandialFeatureExtractor:
             'first_glucose_peak_value_after_meal', 'time_to_first_glucose_peak_after_meal', 'second_glucose_peak_value_after_meal', 'time_to_second_glucose_peak_after_meal',
             'meal_hour', 'meal_day_of_week', 'glucose_at_meal',
             'glucose_at_first_peak', 'rate_of_increase', 'glucose_derivative_15min_before_peak1', 'glucose_derivative_15min_after_peak1', 'glucose_value_15min_after_peak1',
-            'time_since_previous_meal_minutes', 'time_peak_hypo_event', 'target_hypoglycemia', 'hypo_to_check_flag',  
+            'glucose_acceleration_15min_before_peak1', 'glucose_acceleration_15min_after_peak1',
+            'initial_drop_magnitude',
+            'mean_descent_rate_15min_post_peak', 'max_descent_rate_15min_post_peak',       
+            'auc_glucose_rise',
+            'time_since_previous_meal_minutes', 'time_peak_hypo_event', 'target_hypoglycemia', 'hypo_to_check_flag',
             
+            'meal_category', 
+
             # NEW GLUCOSE features
             'postprandial_mean_glucose', 'postprandial_std_glucose', 'postprandial_range',
             
             # New columns for postprandial Time-In-Range (TIR)
             'postprandial_tir_target', 'postprandial_tir_l1_hyper', 'postprandial_tir_l2_hyper', 'postprandial_tir_l1_hypo', 'postprandial_tir_l2_hypo',
             
+            # REGRESSION NEW COLUMNS
+            'is_saturated_at_39', # Flag for sensor saturation events
+            'postprandial_glucose_min', # New target for regression analysis
+            
+            # NEW SHORT-TIME FEATURES
+            'lastROC',
+            'meanROC',
+            
             # HEART_RATE features
-            'hr_mean', 'hr_std', 'hr_min', 'hr_max', 'hr_range', 'hr_slope', 'hr_variability',
+            'hr_mean_15min_post_peak', 'hr_std_15min_post_peak', 'hr_min_15min_post_peak', 'hr_max_15min_post_peak', 'hr_range_15min_post_peak', 'hr_mean_derivative_15min_post_peak', 'hr_variability_15min_post_peak', 
+            'hr_mean_later_post_peak', 'hr_std_later_post_peak', 'hr_min_later_post_peak', 'hr_max_later_post_peak', 'hr_range_later_post_peak', 'hr_mean_derivative_later_post_peak', 'hr_variability_later_post_peak', 
             
             # PULSE_OX features
-            'pulse_ox_mean', 'pulse_ox_std', 'pulse_ox_min', 'pulse_ox_max', 'pulse_ox_range'
+            'pulse_ox_mean', 'pulse_ox_std', 'pulse_ox_min', 'pulse_ox_max', 'pulse_ox_range',
+            
+            # STEPS features 
+            'steps_1h_pre_meal', 'steps_2h_pre_meal', 'steps_3h_pre_meal', 'steps_4h_pre_meal',
+            'steps_during_rise',
+            
+            # PHYSICAL ACTIVITY features
+            'activity_proportion_during_rise', 'mean_cadence_when_active_during_rise',
+            'light_proportion_during_rise', 'moderate_proportion_during_rise', 'vigorous_proportion_during_rise',
+            'mean_cadence_light_during_rise', 'mean_cadence_moderate_during_rise', 'mean_cadence_vigorous_during_rise',
+            'activity_proportion_until_nadir', 'mean_cadence_when_active_until_nadir',
+            'light_proportion_until_nadir', 'moderate_proportion_until_nadir', 'vigorous_proportion_until_nadir', 
+            'mean_cadence_light_until_nadir', 'mean_cadence_moderate_until_nadir', 'mean_cadence_vigorous_until_nadir',
+            
+            # NEW ACTIVITY BOUT & TIMING FEATURES
+            'number_of_activity_bouts_during_rise',
+            'mean_bout_duration_during_rise',
+            'max_bout_duration_during_rise',
+            'time_from_meal_to_first_activity',
+            'activity_proportion_before_peak',
+            'activity_proportion_after_peak',
+
+            # NEW INTERACTION FEATURES
+            'activity_x_pre_meal_glucose',
+            'activity_x_rate_of_increase',
         ]
         
         pre_meal_glucose_cols = []
         pre_meal_hr_cols = []
         pre_meal_pulse_ox_cols = []
+        pre_meal_activity_cols = []
         # Aggiungi le colonne per le metriche pre-pasto dinamicamente
         for interval_hours in self.PRE_MEAL_INTERVALS_HOURS:
             interval_name = f"{interval_hours}h_pre_meal"
@@ -529,22 +809,43 @@ class PostprandialFeatureExtractor:
                 f'mean_glucose_{interval_name}', f'std_glucose_{interval_name}', f'cv_glucose_{interval_name}', f'min_glucose_{interval_name}', f'max_glucose_{interval_name}', f'range_{interval_name}',
                 f'prop_above_130_{interval_name}', f'prop_80_130_{interval_name}', f'prop_50_80_{interval_name}', f'prop_below_50_{interval_name}',
                 f'num_positive_peaks_{interval_name}', f'num_negative_peaks_{interval_name}', 
+                
+                f'num_deep_hypo_events_{interval_name}', f'duration_deep_hypo_minutes_{interval_name}',
+                f'num_hypo_events_{interval_name}', f'duration_hypo_minutes_{interval_name}',
+                f'num_hyper_events_{interval_name}', f'duration_hyper_minutes_{interval_name}',
+                f'num_total_hypo_events_{interval_name}', f'duration_total_hypo_minutes_{interval_name}',
+                
+                f'MAGE_{interval_name}',
+                f'J_index_{interval_name}',
+                f'lbgi_{interval_name}', f'hbgi_{interval_name}',
+                f'bgri_{interval_name}',
+                f'ADRR_{interval_name}',
+
             ])
             pre_meal_hr_cols.extend([ 
                 f'hr_mean_{interval_name}', f'hr_std_{interval_name}', f'hr_min_{interval_name}',  f'hr_max_{interval_name}',  f'hr_range_{interval_name}', 
-                f'hr_slope_{interval_name}', f'hr_variability_{interval_name}', f'hr_prop_time_active_{interval_name}' 
+                #f'hr_slope_{interval_name}', 
+                f'hr_mean_derivative_{interval_name}', f'hr_variability_{interval_name}', 
+                #f'hr_prop_time_active_{interval_name}' 
             ])
             pre_meal_pulse_ox_cols.extend([
                 f'pulse_ox_mean_{interval_name}', f'pulse_ox_std_{interval_name}', f'pulse_ox_min_{interval_name}', f'pulse_ox_max_{interval_name}', f'pulse_ox_range_{interval_name}'
             ])
+            pre_meal_activity_cols.extend([
+                f'activity_proportion_{interval_name}', f'mean_cadence_when_active_{interval_name}',
+                f'light_proportion_{interval_name}', f'moderate_proportion_{interval_name}', f'vigorous_proportion_{interval_name}',
+                f'mean_cadence_light_{interval_name}', f'mean_cadence_moderate_{interval_name}', f'mean_cadence_vigorous_{interval_name}'
+            ])
 
-        new_columns = base_columns + pre_meal_glucose_cols + pre_meal_hr_cols + pre_meal_pulse_ox_cols
+        new_columns = base_columns + pre_meal_glucose_cols + pre_meal_hr_cols + pre_meal_pulse_ox_cols + pre_meal_activity_cols
         
-        # inizializzazione a NaN
-        for col in new_columns:
-            if col not in all_postprandial_df.columns:
-                all_postprandial_df[col] = np.nan
-
+        # Find which columns are truly new and add them all at once
+        existing_columns = all_postprandial_df.columns
+        columns_to_add = [col for col in new_columns if col not in existing_columns]
+        
+        if columns_to_add:
+            # This is the efficient way to add many new columns, preventing fragmentation
+            all_postprandial_df = all_postprandial_df.reindex(columns=existing_columns.tolist() + columns_to_add)
 
         subjects_glucose_data = {} # initialize the glucos data
         subjects_wearable_data = {} # initialize the wearable data
@@ -572,9 +873,10 @@ class PostprandialFeatureExtractor:
                 continue
 
             # considero le tre serie di interesse: CGM, CGM filtrato e derivata del CGM
-            glucose_series = glucose_df_subj['glucose']
-            glucose_series_filtered = glucose_df_subj['glucose_filtered']
+            glucose_series = glucose_df_subj['glucose'] # Unfiltered, original data
+            glucose_series_filtered = glucose_df_subj['glucose_filtered'] # Filtered data
             glucose_derivative_series = glucose_df_subj['glucose_derivative']
+            glucose_second_derivative_series = glucose_df_subj['glucose_second_derivative']
             
             # Ottieni il primo timestamp disponibile per i dati di glucosio del soggetto
             first_glucose_timestamp = glucose_series_filtered.index.min()
@@ -712,6 +1014,14 @@ class PostprandialFeatureExtractor:
             deriv_15min_before_peak1 = np.nan
             deriv_15min_after_peak1 = np.nan
             glucose_15min_after_peak1 = np.nan
+            accel_15min_before_peak1 = np.nan
+            accel_15min_after_peak1 = np.nan
+            initial_drop_magnitude = np.nan
+            mean_descent_rate = np.nan
+            max_descent_rate = np.nan
+            auc_rise = np.nan
+            
+            steps_during_rise = np.nan
 
             if pd.notna(time_to_peak1):
                 
@@ -742,10 +1052,65 @@ class PostprandialFeatureExtractor:
                 
                 # Glucosio 15 minuti dopo il picco
                 glucose_15min_after_peak1 = glucose_series.asof(time_15min_after_peak1) # 'asof' prende il valore più recente <= timestamp
+                
+                
+                # Accelerazione 15 minuti prima e dopo il picco
+                glucose_second_derivative_series_filled = glucose_second_derivative_series.interpolate(method='linear')
+                accel_15min_before_peak1 = glucose_second_derivative_series_filled.asof(time_15min_before_peak1)
+                accel_15min_after_peak1 = glucose_second_derivative_series_filled.asof(time_15min_after_peak1)
+                
+                
+                # Initial Drop Magnitude
+                if pd.notna(peak1_val) and pd.notna(glucose_15min_after_peak1):
+                    initial_drop_magnitude = peak1_val - glucose_15min_after_peak1
+                
+                
+                # Mean and Max Descent Rate in 15-min post-peak window
+                descent_window_derivatives = glucose_derivative_series_filled.loc[peak1_timestamp:time_15min_after_peak1]
+                if not descent_window_derivatives.empty:
+                    mean_descent_rate = descent_window_derivatives.mean()
+                    max_descent_rate = descent_window_derivatives.min() # .min() will give the most negative rate
+                
+                
+                # AUC of Glucose Rise (Meal Start to Peak)
+                rise_window_glucose = glucose_series_filtered.loc[meal_start:peak1_timestamp].dropna()
+                if len(rise_window_glucose) >= 2:
+                    y_values = rise_window_glucose.values
+                    # Convert time index to minutes from start for x-axis
+                    x_values = (rise_window_glucose.index - meal_start).total_seconds() / 60
+                    auc_rise = np.trapz(y=y_values, x=x_values)
+                
+                
+                # Steps during rise window (from meal start to 15 mins after peak)
+                if row.get('has_steps_data') == 1:
+                    steps_df_subj = subjects_wearable_data.get(subj_id, {}).get('STEPS')
+                    if steps_df_subj is not None and not steps_df_subj.empty:
+                        
+                        mask = (steps_df_subj.index >= meal_start) & (steps_df_subj.index <= time_15min_after_peak1)
+                        rise_window_steps = steps_df_subj.loc[mask]['STEPS'].dropna()
+                        
+                        if len(rise_window_steps) >= 2:
+                            # Calculate the difference between each consecutive point
+                            diffs = rise_window_steps.diff()
+                            # Sum only the positive differences, ignoring decreases from resets
+                            steps_during_rise = diffs[diffs > 0].sum()
+                            # # Calculate steps taken by subtracting min from max, for cumulative counters
+                            # steps_during_rise = rise_window_steps.max() - rise_window_steps.min()
+                        elif len(rise_window_steps) == 1:
+                            steps_during_rise = 0 # If only one sample, no change in steps
+
 
             all_postprandial_df.at[index, 'glucose_derivative_15min_before_peak1'] = deriv_15min_before_peak1
             all_postprandial_df.at[index, 'glucose_derivative_15min_after_peak1'] = deriv_15min_after_peak1
             all_postprandial_df.at[index, 'glucose_value_15min_after_peak1'] = glucose_15min_after_peak1
+            all_postprandial_df.at[index, 'glucose_acceleration_15min_before_peak1'] = accel_15min_before_peak1
+            all_postprandial_df.at[index, 'glucose_acceleration_15min_after_peak1'] = accel_15min_after_peak1
+            all_postprandial_df.at[index, 'initial_drop_magnitude'] = initial_drop_magnitude
+            all_postprandial_df.at[index, 'mean_descent_rate_15min_post_peak'] = mean_descent_rate
+            all_postprandial_df.at[index, 'max_descent_rate_15min_post_peak'] = max_descent_rate
+            all_postprandial_df.at[index, 'auc_glucose_rise'] = auc_rise
+            
+            all_postprandial_df.at[index, 'steps_during_rise'] = steps_during_rise
 
             #------------------------------------------------------------------
             # 11. tempo da ultimo pasto
@@ -779,9 +1144,39 @@ class PostprandialFeatureExtractor:
             #------------------------------------------------------------------
             # 13. Postprandial descriptive statistics and Time-In-Range (TIR)
             # These features characterize the glucose profile during the postprandial period
+            # + FROM CLASSIFICATION TO REGRESSION
             #------------------------------------------------------------------
             # Select the postprandial glucose data from the filtered series
             postprandial_glucose = glucose_series_filtered.loc[meal_start:meal_end]
+            
+            
+            # SATURATION FLAG for any meal where the glucose hits the sensor floor of 39
+            # Define the consistent analysis window, starting 30 minutes after the meal_start
+            analysis_start_time = meal_start + pd.Timedelta(minutes=30)
+            postprandial_glucose_unfiltered = glucose_series.loc[analysis_start_time:meal_end]
+            
+            if not postprandial_glucose_unfiltered.empty:
+                # This logic will find consecutive blocks of '39'
+                saturated_segments = (postprandial_glucose_unfiltered == 39).astype(int).groupby( # .astype(int) transforms the False/True series into a 0/1 series
+                    (postprandial_glucose_unfiltered == 39).astype(int).diff().ne(0).cumsum() # .ne(0) checks which values are "not equal to 0" ---> this gives us a True for every spot where a block changes
+                ).filter(lambda x: len(x) >= 3 and x.iloc[0] == 1) # x.iloc[0] == 1 ---> the block must be made of 1s (saturation), not 0s
+                
+                # Set the flag to 1 only if a sustained segment (>= 3 samples) is found
+                is_saturated = 1 if not saturated_segments.empty else 0
+                all_postprandial_df.at[index, 'is_saturated_at_39'] = is_saturated
+            else:
+                all_postprandial_df.at[index, 'is_saturated_at_39'] = 0
+                all_postprandial_df.at[index, 'postprandial_glucose_min'] = np.nan
+                
+            
+            # MINIMUM GLUCOSE VALUE for Regression Target
+            postprandial_glucose_filtered = glucose_series_filtered.loc[analysis_start_time:meal_end]
+            if not postprandial_glucose_filtered.empty and not postprandial_glucose_filtered.isnull().all():
+                all_postprandial_df.at[index, 'postprandial_glucose_min'] = postprandial_glucose_filtered.min()
+            else:
+                all_postprandial_df.at[index, 'postprandial_glucose_min'] = np.nan
+                
+                
 
             # Check if there is valid data in the window to perform calculations
             if not postprandial_glucose.empty and not postprandial_glucose.isnull().all():
@@ -789,6 +1184,7 @@ class PostprandialFeatureExtractor:
                 all_postprandial_df.at[index, 'postprandial_mean_glucose'] = postprandial_glucose.mean()
                 all_postprandial_df.at[index, 'postprandial_std_glucose'] = postprandial_glucose.std()
                 all_postprandial_df.at[index, 'postprandial_range'] = postprandial_glucose.max() - postprandial_glucose.min()
+                
 
                 # Time-In-Range (TIR) calculation as a proportion of the time in the window
                 total_samples_in_window = postprandial_glucose.notna().sum()
@@ -813,6 +1209,25 @@ class PostprandialFeatureExtractor:
                     tir_l2_hypo = (postprandial_glucose < 54).sum() / total_samples_in_window
                     all_postprandial_df.at[index, 'postprandial_tir_l2_hypo'] = tir_l2_hypo
             
+            
+            #------------------------------------------------------------------
+            # 14. Short-Time features on the predictive window
+            #------------------------------------------------------------------
+            if pd.notna(time_to_peak1):
+                # Define the predictive window: 30 mins pre-meal to 15 mins post-peak
+                predictive_window_start = meal_start - pd.Timedelta(minutes=30)
+                peak_timestamp = meal_start + pd.Timedelta(minutes=time_to_peak1)
+                predictive_window_end = peak_timestamp + pd.Timedelta(minutes=15)
+                
+                # Ensure the window does not go beyond the end of the postprandial period
+                predictive_window_end = min(predictive_window_end, meal_end)
+                
+                predictive_glucose = glucose_series_filtered.loc[predictive_window_start:predictive_window_end]
+                
+                short_time_feats = self._calculate_short_time_features(predictive_glucose)
+                for key, value in short_time_feats.items():
+                    all_postprandial_df.at[index, key] = value
+            
             #------------------------------------------------------------------
             
             # WEARABLE FEATURES    
@@ -823,37 +1238,172 @@ class PostprandialFeatureExtractor:
            
             
             #------------------------------------------------------------------
-            # 14. HR Features
+            # 15. HR Features
             #------------------------------------------------------------------
+            # Extraction of HR features in two windows: from meal_start until 15 mins after the first glucose peak, and from 15 mins after the first glucose peak to the meal_end
             if row.get('has_heart_rate_data') == 1:
                 hr_df_subj = subjects_wearable_data.get(subj_id, {}).get('HEART_RATE')
+                steps_df_subj = subjects_wearable_data.get(subj_id, {}).get('STEPS')
+
                 if hr_df_subj is not None and not hr_df_subj.empty:
-                    
+
                     # Calculate and cache personalized thresholds once per subject
                     if subj_id not in subjects_hr_thresholds:
                         hr_rest = hr_df_subj['HEART_RATE'].quantile(0.025)
                         hr_max = hr_df_subj['HEART_RATE'].quantile(0.975)
                         hrr = hr_max - hr_rest
-                        # Ensure hrr is not zero to avoid division by zero or invalid threshold
-                        if hrr > 0:
-                            personalized_threshold = (hrr * self.HR_ACTIVITY_HRR_INTENSITY) + hr_rest
-                        else:
-                            personalized_threshold = np.inf # Set an impossibly high threshold if HRest/HRmax are the same
-                        subjects_hr_thresholds[subj_id] = personalized_threshold
+                        subjects_hr_thresholds[subj_id] = {'hr_rest': hr_rest, 'hrr': hrr}
                     
-                    personalized_hr_threshold = subjects_hr_thresholds[subj_id]
+                    hr_params = subjects_hr_thresholds[subj_id]
+                    hr_rest = hr_params['hr_rest']
+                    hrr = hr_params['hrr']
+                    
+                    # Calculate the simple threshold needed for the original functions
+                    if hrr > 0:
+                        personalized_hr_threshold = (hrr * self.HR_ACTIVITY_HRR_INTENSITY) + hr_rest
+                    else:
+                        personalized_hr_threshold = np.inf
 
-                    # Pass the threshold to the helper functions
-                    post_hr_features = self._extract_heart_rate_features(hr_df_subj, meal_start, meal_end, personalized_hr_threshold)
-                    for key, value in post_hr_features.items(): 
-                        all_postprandial_df.at[index, key] = value
+                    # Define the two windows and extract the hr features for each one
+                    time_to_peak1 = all_postprandial_df.at[index, 'time_to_first_glucose_peak_after_meal']
+
+                    if pd.notna(time_to_peak1):
+                        peak_timestamp = meal_start + pd.Timedelta(minutes=time_to_peak1)
+
+                        # Window 1: From meal_start untilet 15 minutes after the peak
+                        start_window_1 = meal_start
+                        end_window_1 = peak_timestamp + pd.Timedelta(minutes=15)
+                        end_window_1 = min(end_window_1, meal_end) # Ensure it doesn't exceed meal_end
+
+                        # Window 2: From 15 mins post-peak to the end of the postprandial period
+                        start_window_2 = end_window_1
+                        end_window_2 = meal_end
+
+                        # Extract features for Window 1 (Predictive Features)
+                        if start_window_1 < end_window_1:
+                            hr_features_15min = self._calculate_hr_features_for_window(hr_df_subj, start_window_1, end_window_1, personalized_hr_threshold)
+                            for key, value in hr_features_15min.items():
+                                all_postprandial_df.at[index, f'{key}_15min_post_peak'] = value
+
+
+                        # Extract features for Window 2 (Analytical Features)
+                        if start_window_2 < end_window_2:
+                            hr_features_later = self._calculate_hr_features_for_window(hr_df_subj, start_window_2, end_window_2, personalized_hr_threshold)
+                            for key, value in hr_features_later.items():
+                                all_postprandial_df.at[index, f'{key}_later_post_peak'] = value
+
+                    # Pre-meal HR feature extraction
                     first_hr_ts = hr_df_subj.index.min()
                     pre_hr_features = self._calculate_pre_meal_hr_metrics(hr_df_subj, meal_start, first_hr_ts, personalized_hr_threshold)
-                    for key, value in pre_hr_features.items(): 
+                    for key, value in pre_hr_features.items():
                         all_postprandial_df.at[index, key] = value
-            
+                    
+                    
+                    ##  PHYSICAL ACTIVITY
+                    hr_df = subjects_wearable_data.get(subj_id, {}).get('HEART_RATE')
+                    steps_df = subjects_wearable_data.get(subj_id, {}).get('STEPS')
+
+                    # Calculate Post-Meal "During Rise" Activity
+                    time_to_peak1 = all_postprandial_df.at[index, 'time_to_first_glucose_peak_after_meal']
+                    if pd.notna(time_to_peak1):
+                        end_rise_window = min(meal_start + pd.Timedelta(minutes=time_to_peak1 + 15), meal_end)
+                        rise_activity_features = self._calculate_physical_activity_for_window(
+                            hr_df, steps_df, meal_start, end_rise_window,  hr_rest, hrr
+                        )
+                        for key, value in rise_activity_features.items():
+                            all_postprandial_df.at[index, f'{key}_during_rise'] = value
+                    
+                    # Calculate exploratory activity until glycemic nadir 
+                    postprandial_glucose = glucose_series_filtered.loc[meal_start:meal_end]
+                    if not postprandial_glucose.empty:
+                        nadir_timestamp = postprandial_glucose.idxmin() # get timestamp of minimum value
+                        if pd.notna(nadir_timestamp) and nadir_timestamp > meal_start:
+                            nadir_activity_features = self._calculate_physical_activity_for_window(
+                            hr_df, steps_df, meal_start, nadir_timestamp, hr_rest, hrr
+                        )
+                        for key, value in nadir_activity_features.items():
+                            all_postprandial_df.at[index, f'{key}_until_nadir'] = value
+
+                    # Calculate Pre-Meal Activity
+                    pre_meal_activity_features = self._extract_pre_meal_activity_features(
+                        hr_df, steps_df, meal_start,  hr_rest, hrr
+                    )
+                    for key, value in pre_meal_activity_features.items():
+                        all_postprandial_df.at[index, key] = value
+                    
+                    
+                    # =================================================================
+                    # NEW: ACTIVITY BOUT, TIMING, AND INTERACTION FEATURE EXTRACTION
+                    # =================================================================
+                    if hr_df is not None and not hr_df.empty and steps_df is not None and not steps_df.empty and pd.notna(time_to_peak1):
+                        
+                        # --- 1. Bout Analysis (within the "during_rise" window) ---
+                        # We need to recalculate the 'is_active_mask' specifically for this analysis
+                        end_rise_window = min(meal_start + pd.Timedelta(minutes=time_to_peak1 + 15), meal_end)
+                        
+                        hr_mask = (hr_df.index >= meal_start) & (hr_df.index <= end_rise_window)
+                        hr_rise = hr_df.loc[hr_mask]['HEART_RATE'].dropna()
+
+                        steps_mask = (steps_df.index >= meal_start) & (steps_df.index <= end_rise_window)
+                        steps_rise = steps_df.loc[steps_mask]['STEPS'].dropna()
+
+                        if len(hr_rise) > 1 and len(steps_rise) > 1:
+                            hr_resampled = hr_rise.resample('1min').ffill()
+                            steps_resampled = steps_rise.resample('1min').ffill()
+                            cadence = steps_resampled.diff().fillna(0)
+                            cadence[cadence < 0] = 0
+                            
+                            combined_df = pd.DataFrame({'HR': hr_resampled, 'Cadence': cadence}).dropna()
+                            
+                            if not combined_df.empty:
+                                thresholds = {
+                                    'light': (hrr * self.HR_ACTIVITY_HRR_INTENSITIES['light'][0]) + hr_rest
+                                }
+                                # Activity is defined as movement (cadence > min) and elevated HR
+                                is_active_mask = (combined_df['Cadence'] > self.MIN_CADENCE_FOR_ACTIVITY) & \
+                                                 (combined_df['HR'] >= thresholds['light'])
+                                
+                                if is_active_mask.any():
+                                    # Calculate bout features
+                                    # A "bout" starts when is_active_mask switches from False to True
+                                    activity_groups = is_active_mask.ne(is_active_mask.shift()).cumsum()
+                                    active_blocks = activity_groups[is_active_mask]
+                                    
+                                    if not active_blocks.empty:
+                                        bout_lengths = active_blocks.value_counts()
+                                        all_postprandial_df.at[index, 'number_of_activity_bouts_during_rise'] = len(bout_lengths)
+                                        all_postprandial_df.at[index, 'mean_bout_duration_during_rise'] = bout_lengths.mean()
+                                        all_postprandial_df.at[index, 'max_bout_duration_during_rise'] = bout_lengths.max()
+                                    
+                                    # --- 2. Timing Analysis ---
+                                    first_activity_timestamp = is_active_mask[is_active_mask].index[0]
+                                    time_to_first_activity = (first_activity_timestamp - meal_start).total_seconds() / 60
+                                    all_postprandial_df.at[index, 'time_from_meal_to_first_activity'] = time_to_first_activity
+
+                                    # Activity before vs. after peak
+                                    peak_timestamp = meal_start + pd.Timedelta(minutes=time_to_peak1)
+                                    activity_before_peak = is_active_mask.loc[:peak_timestamp]
+                                    activity_after_peak = is_active_mask.loc[peak_timestamp:]
+                                    
+                                    if not activity_before_peak.empty:
+                                        all_postprandial_df.at[index, 'activity_proportion_before_peak'] = activity_before_peak.mean() * 100
+                                    if not activity_after_peak.empty:
+                                        all_postprandial_df.at[index, 'activity_proportion_after_peak'] = activity_after_peak.mean() * 100
+
+                    # --- 3. Interaction Feature Calculation ---
+                    activity_prop = all_postprandial_df.at[index, 'activity_proportion_during_rise']
+                    pre_meal_glucose = all_postprandial_df.at[index, 'mean_glucose_1h_pre_meal']
+                    rate_of_increase = all_postprandial_df.at[index, 'rate_of_increase']
+
+                    if pd.notna(activity_prop) and pd.notna(pre_meal_glucose):
+                        all_postprandial_df.at[index, 'activity_x_pre_meal_glucose'] = activity_prop * pre_meal_glucose
+                    
+                    if pd.notna(activity_prop) and pd.notna(rate_of_increase):
+                        all_postprandial_df.at[index, 'activity_x_rate_of_increase'] = activity_prop * rate_of_increase
+ 
+
             #------------------------------------------------------------------
-            # 15. Pulse Ox Features 
+            # 16. Pulse Ox Features 
             #------------------------------------------------------------------
             if row.get('has_pulse_ox_data') == 1:
                 pulse_ox_df_subj = subjects_wearable_data.get(subj_id, {}).get('PULSE_OX')
@@ -866,31 +1416,46 @@ class PostprandialFeatureExtractor:
                     for key, value in pre_pulse_ox_features.items(): 
                         all_postprandial_df.at[index, key] = value
             
+            
             #------------------------------------------------------------------
-            # 16. Daily Target Steps
+            # 17. Meal Categorization and Step Features
             #------------------------------------------------------------------
+            meal_hour = meal_start.hour
+            if 5 <= meal_hour < 9:
+                meal_category = 'Breakfast'
+            elif 11 <= meal_hour < 14:
+                meal_category = 'Lunch'
+            elif 17 <= meal_hour < 19.5: # Up to 19:30
+                meal_category = 'Dinner'
+            else:
+                meal_category = 'Snack'
+            all_postprandial_df.at[index, 'meal_category'] = meal_category
+
             if row.get('has_steps_data') == 1:
-                if subj_id not in subjects_daily_steps_data:
-                    # Calculate and save daily steps for the subject 
-                    steps_df_subj = subjects_wearable_data.get(subj_id, {}).get('STEPS')
-                    subjects_daily_steps_data[subj_id] = self._calculate_daily_steps(steps_df_subj)
-
-                daily_steps = subjects_daily_steps_data[subj_id]
-                
-                if daily_steps is not None:
-                    meal_date = meal_start.date()
-                    
-                    # Normalize the meal_start timestamp to midnight to get a key that perfectly matches the DatetimeIndex of the 'daily_steps' Series
-                    # Use .get() to safely access the date, in case there are no steps for that day
-                    meal_date_key = meal_start.normalize()
-                    total_steps_for_day = daily_steps.get(meal_date_key, 0)
-                    
-                    if total_steps_for_day >= self.DAILY_STEP_TARGET:
-                        all_postprandial_df.at[index, 'daily_step_target_reached'] = 1
-                    else:
-                        all_postprandial_df.at[index, 'daily_step_target_reached'] = 0
-
-
+                steps_df_subj = subjects_wearable_data.get(subj_id, {}).get('STEPS')
+                if steps_df_subj is not None and not steps_df_subj.empty:
+                    # Pre-meal steps calculation
+                    for hour_window in [1, 2, 3, 4]:
+                        start_window = meal_start - pd.Timedelta(hours=hour_window)
+                        end_window = meal_start
+                        
+                        mask = (steps_df_subj.index >= start_window) & (steps_df_subj.index < end_window)
+                        pre_meal_steps_series = steps_df_subj.loc[mask]['STEPS'].dropna()
+                        
+                        steps_taken = np.nan
+                        if len(pre_meal_steps_series) >= 2:
+                            # Calculate the difference between each consecutive point
+                            diffs = pre_meal_steps_series.diff()
+                            # Sum only the positive differences, ignoring decreases from resets
+                            steps_taken = diffs[diffs > 0].sum()
+                            # # For cumulative counters, steps taken = max - min in the window
+                            # steps_taken = pre_meal_steps_series.max() - pre_meal_steps_series.min()
+                        elif not pre_meal_steps_series.empty:
+                            steps_taken = 0 # If only one sample, assume no change
+                            
+                        all_postprandial_df.at[index, f'steps_{hour_window}h_pre_meal'] = steps_taken    
+                        
+                        
             #------------------------------------------------------------------
             
             if (index + 1) % 1000 == 0:
@@ -898,6 +1463,11 @@ class PostprandialFeatureExtractor:
 
 
 
+        # Report the number of saturation events found
+        total_saturation_events = all_postprandial_df['is_saturated_at_39'].sum()
+        print(f"\nFound a total of {total_saturation_events} meal events with sensor saturation (glucose at 39 mg/dL).")
+        
+        
         print("\n-->Estrazione feature completata<--")
 
         output_path = os.path.join(self.data_dir_db, self.output_filename)
