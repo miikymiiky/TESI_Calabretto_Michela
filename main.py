@@ -75,7 +75,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     
     # --- Parametri Specifici per DataVisualizer ---
     # Switch to easily change between analysis modes
-    ANALYSIS_MODE = 'classification'  # Options: 'classification' or 'regression'
+    ANALYSIS_MODE = 'regression'  # Options: 'classification' or 'regression'
 
     ANALIZER_PARAMS = {
         "data_file_path":os.path.join(COMMON_PARAMS["data_dir_db"],EXTRACTOR_PARAMS["output_filename_with_features"]), 
@@ -172,6 +172,14 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         print("\n--- Target Distribution (After Wearable Filters) ---")
         if analyzer.df is not None:
             print(analyzer.df['target_hypoglycemia'].value_counts(dropna=False))
+        
+        
+
+        # Print the final number of subjects
+        if analyzer.df is not None and not analyzer.df.empty:
+            final_subject_count = analyzer.df['subj_id'].nunique()
+            print(f"\n--- Number of Subjects Remaining After All Filters ---")
+            print(f"Total unique subjects for the analysis: {final_subject_count}")
             
             
         
@@ -186,8 +194,16 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
             
             # Call the statistical test method 
             # Step 1: Run the main statistical tests
-            significant_features = analyzer.run_classification_tests()
+            significant_features, features_analyzed = analyzer.run_classification_tests()
             
+            
+            # Number of Features Analyzed
+            if features_analyzed:
+                print(f"\n--- Number of Features Analyzed for Prediction ---")
+                print(f"Total predictive features analyzed: {len(features_analyzed)}")
+
+            
+
             # Step 2: If there are significant features, run the post-hoc tests
             if significant_features is not None and not significant_features.empty:
                 posthoc_results = analyzer.run_posthoc_tests(significant_features)
@@ -264,9 +280,17 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         elif ANALYSIS_MODE == 'regression':
             print("\n--- Running Regression Analysis ---")
             # Plot feature vs. target scatter plots
-            analyzer.plot_distributions_by_target(num_cols_per_plot=3)
+            #analyzer.plot_distributions_by_target(num_cols_per_plot=3)
             # Display features most correlated with the target
-            regression_results = analyzer.display_regression_correlations(top_n=25)
+            regression_results, features_analyzed = analyzer.display_regression_correlations(top_n=25)
+
+
+            # Number of Features Analyzed
+            if features_analyzed:
+               print(f"\n--- Number of Features Analyzed for Prediction ---")
+               print(f"Total predictive features analyzed: {len(features_analyzed)}")
+            
+            
             
             # Generate heatmap for top regression features 
             if regression_results is not None and not regression_results.empty:
@@ -314,8 +338,8 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
    
         # Steps Plots
         print("\n--- Plotting Step Distributions by Meal Category ---")
-        analyzer.plot_postmeal_steps_by_meal_category()
-        analyzer.plot_steps_by_meal_category()
+        #analyzer.plot_postmeal_steps_by_meal_category()
+        #analyzer.plot_steps_by_meal_category()
         
         
         

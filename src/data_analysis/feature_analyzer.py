@@ -395,7 +395,7 @@ class FeatureAnalyzer:
         results_df.to_csv(output_path, index=False)
         print(f"\nFull regression results saved to: {output_path}")
 
-        return results_df
+        return results_df, features_to_test
 
     
     def plot_distributions_by_target(self, num_cols_per_plot=3, figsize=(18, 6)):
@@ -661,7 +661,7 @@ class FeatureAnalyzer:
         results_df.to_csv(output_path, index=False)
         print(f"\nFull omnibus test results saved to: {output_path}")
         
-        return results_df
+        return results_df, features_to_test
     
     
     
