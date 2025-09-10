@@ -12,6 +12,7 @@ import numpy as np
 import os
 from scipy.signal import find_peaks
 from matplotlib import pyplot as plt
+from src.utils.utils4processing import interpolate_saturation_events
 
 class PostprandialFeatureExtractor:
     """
@@ -760,7 +761,9 @@ class PostprandialFeatureExtractor:
             
             # REGRESSION NEW COLUMNS
             'is_saturated_at_39', # Flag for sensor saturation events
-            'postprandial_glucose_min', # New target for regression analysis
+            'postprandial_glucose_min', # New target for regression analysis, calculated from the interpolated series
+            'was_interpolated', # Interpolation flag (to show if the original data was modified)
+            'postprandial_glucose_min_original', # Column to preserve the original minimum value read by the sensor
             
             # NEW SHORT-TIME FEATURES
             'lastROC',
@@ -851,6 +854,9 @@ class PostprandialFeatureExtractor:
         subjects_wearable_data = {} # initialize the wearable data
         subjects_daily_steps_data = {} # initialize the daily steps
         subjects_hr_thresholds = {} # initialize the subjects' threshold
+        
+        # Initialize a counter for successfully interpolated meals
+        interpolated_meal_counter = 0
 
         old_subj = ''
 
@@ -875,6 +881,34 @@ class PostprandialFeatureExtractor:
             # considero le tre serie di interesse: CGM, CGM filtrato e derivata del CGM
             glucose_series = glucose_df_subj['glucose'] # Unfiltered, original data
             glucose_series_filtered = glucose_df_subj['glucose_filtered'] # Filtered data
+        
+            
+            # Slice the data to the specific meal window 
+            # This is the critical step to ensure we only check for saturation within this one meal
+            postprandial_raw = glucose_series.loc[meal_start:meal_end]
+            postprandial_filtered = glucose_series_filtered.loc[meal_start:meal_end]
+
+            # Apply spline interpolation to the filtered series 
+            # This creates a new series where saturation events (at 39) are replaced with interpolated values
+            # This new series will be used for calculating the regression target and other metrics
+            # We detect saturation on the raw 'glucose_series' but apply the interpolation to the smooth 'glucose_series_filtered'
+            # The function returns the series and the interpolation boolean flag 
+            glucose_series_interpolated, was_interpolated_flag = interpolate_saturation_events(
+                glucose_series_to_interpolate=postprandial_filtered,
+                glucose_series_for_detection=postprandial_raw
+            )   
+            
+            # Set the flag to 0 by default for this meal
+            all_postprandial_df.at[index, 'was_interpolated'] = 0
+            
+            # If the function confirms an interpolation happened
+            if was_interpolated_flag:
+                # increment the counter
+                interpolated_meal_counter += 1
+                # and set the flag in the dataframe to 1
+                all_postprandial_df.at[index, 'was_interpolated'] = 1
+
+            
             glucose_derivative_series = glucose_df_subj['glucose_derivative']
             glucose_second_derivative_series = glucose_df_subj['glucose_second_derivative']
             
@@ -989,7 +1023,9 @@ class PostprandialFeatureExtractor:
             #------------------------------------------------------------------
             # 5. Glucosio al pasto
             #------------------------------------------------------------------
-            glucose_at_meal_start = glucose_series_filtered.get(meal_start, np.nan)
+            # Use the interpolated series for the starting glucose value
+            glucose_at_meal_start = glucose_series_interpolated.get(meal_start, np.nan)
+            #glucose_at_meal_start = glucose_series_filtered.get(meal_start, np.nan)
             all_postprandial_df.at[index, 'glucose_at_meal'] = glucose_at_meal_start
             
             #------------------------------------------------------------------
@@ -1073,7 +1109,9 @@ class PostprandialFeatureExtractor:
                 
                 
                 # AUC of Glucose Rise (Meal Start to Peak)
-                rise_window_glucose = glucose_series_filtered.loc[meal_start:peak1_timestamp].dropna()
+                # Use the interpolated series for a more accurate AUC
+                rise_window_glucose = glucose_series_interpolated.loc[meal_start:peak1_timestamp].dropna()
+                #rise_window_glucose = glucose_series_filtered.loc[meal_start:peak1_timestamp].dropna()
                 if len(rise_window_glucose) >= 2:
                     y_values = rise_window_glucose.values
                     # Convert time index to minutes from start for x-axis
@@ -1145,20 +1183,18 @@ class PostprandialFeatureExtractor:
             # 13. Postprandial descriptive statistics and Time-In-Range (TIR)
             # These features characterize the glucose profile during the postprandial period
             # + FROM CLASSIFICATION TO REGRESSION
+            # + INTERPOLATION OF SATURATION EVENTS
             #------------------------------------------------------------------
-            # Select the postprandial glucose data from the filtered series
-            postprandial_glucose = glucose_series_filtered.loc[meal_start:meal_end]
-            
-            
-            # SATURATION FLAG for any meal where the glucose hits the sensor floor of 39
+            # --- SATURATION FLAG --- 
+            # We check for saturation on the original (unfiltered) data to be certain.
             # Define the consistent analysis window, starting 30 minutes after the meal_start
             analysis_start_time = meal_start + pd.Timedelta(minutes=30)
-            postprandial_glucose_unfiltered = glucose_series.loc[analysis_start_time:meal_end]
+            postprandial_glucose_original = glucose_series.loc[analysis_start_time:meal_end]
             
-            if not postprandial_glucose_unfiltered.empty:
+            if not postprandial_glucose_original.empty:
                 # This logic will find consecutive blocks of '39'
-                saturated_segments = (postprandial_glucose_unfiltered == 39).astype(int).groupby( # .astype(int) transforms the False/True series into a 0/1 series
-                    (postprandial_glucose_unfiltered == 39).astype(int).diff().ne(0).cumsum() # .ne(0) checks which values are "not equal to 0" ---> this gives us a True for every spot where a block changes
+                saturated_segments = (postprandial_glucose_original == 39).astype(int).groupby(
+                    (postprandial_glucose_original == 39).astype(int).diff().ne(0).cumsum()
                 ).filter(lambda x: len(x) >= 3 and x.iloc[0] == 1) # x.iloc[0] == 1 ---> the block must be made of 1s (saturation), not 0s
                 
                 # Set the flag to 1 only if a sustained segment (>= 3 samples) is found
@@ -1166,16 +1202,24 @@ class PostprandialFeatureExtractor:
                 all_postprandial_df.at[index, 'is_saturated_at_39'] = is_saturated
             else:
                 all_postprandial_df.at[index, 'is_saturated_at_39'] = 0
-                all_postprandial_df.at[index, 'postprandial_glucose_min'] = np.nan
-                
             
-            # MINIMUM GLUCOSE VALUE for Regression Target
+            # --- REGRESSION TARGET & POSTPRANDIAL METRICS ---
+            # First, store the original minimum value for reference
             postprandial_glucose_filtered = glucose_series_filtered.loc[analysis_start_time:meal_end]
             if not postprandial_glucose_filtered.empty and not postprandial_glucose_filtered.isnull().all():
-                all_postprandial_df.at[index, 'postprandial_glucose_min'] = postprandial_glucose_filtered.min()
+                all_postprandial_df.at[index, 'postprandial_glucose_min_original'] = postprandial_glucose_filtered.min()
+            else:
+                all_postprandial_df.at[index, 'postprandial_glucose_min_original'] = np.nan
+
+            # Now, use the INTERPOLATED series for all final calculations
+            postprandial_glucose = glucose_series_interpolated
+            
+            # Calculate the final regression target from the interpolated data
+            postprandial_glucose_for_min = glucose_series_interpolated.loc[analysis_start_time:meal_end]
+            if not postprandial_glucose_for_min.empty and not postprandial_glucose_for_min.isnull().all():
+                all_postprandial_df.at[index, 'postprandial_glucose_min'] = postprandial_glucose_for_min.min()
             else:
                 all_postprandial_df.at[index, 'postprandial_glucose_min'] = np.nan
-                
                 
 
             # Check if there is valid data in the window to perform calculations
@@ -1218,15 +1262,105 @@ class PostprandialFeatureExtractor:
                 predictive_window_start = meal_start - pd.Timedelta(minutes=30)
                 peak_timestamp = meal_start + pd.Timedelta(minutes=time_to_peak1)
                 predictive_window_end = peak_timestamp + pd.Timedelta(minutes=15)
-                
+               
                 # Ensure the window does not go beyond the end of the postprandial period
                 predictive_window_end = min(predictive_window_end, meal_end)
                 
-                predictive_glucose = glucose_series_filtered.loc[predictive_window_start:predictive_window_end]
+                # Use the interpolated series for ROC calculation
+                predictive_glucose = glucose_series_interpolated.loc[predictive_window_start:predictive_window_end]
+                #predictive_glucose = glucose_series_filtered.loc[predictive_window_start:predictive_window_end]
                 
                 short_time_feats = self._calculate_short_time_features(predictive_glucose)
                 for key, value in short_time_feats.items():
                     all_postprandial_df.at[index, key] = value
+            
+            #------------------------------------------------------------------
+            
+            
+            
+            
+            
+            # # Select the postprandial glucose data from the filtered series
+            # postprandial_glucose = glucose_series_filtered.loc[meal_start:meal_end]
+            
+            
+            # # SATURATION FLAG for any meal where the glucose hits the sensor floor of 39
+            # # Define the consistent analysis window, starting 30 minutes after the meal_start
+            # analysis_start_time = meal_start + pd.Timedelta(minutes=30)
+            # postprandial_glucose_unfiltered = glucose_series.loc[analysis_start_time:meal_end]
+            
+            # if not postprandial_glucose_unfiltered.empty:
+            #     # This logic will find consecutive blocks of '39'
+            #     saturated_segments = (postprandial_glucose_unfiltered == 39).astype(int).groupby( # .astype(int) transforms the False/True series into a 0/1 series
+            #         (postprandial_glucose_unfiltered == 39).astype(int).diff().ne(0).cumsum() # .ne(0) checks which values are "not equal to 0" ---> this gives us a True for every spot where a block changes
+            #     ).filter(lambda x: len(x) >= 3 and x.iloc[0] == 1) # x.iloc[0] == 1 ---> the block must be made of 1s (saturation), not 0s
+                
+            #     # Set the flag to 1 only if a sustained segment (>= 3 samples) is found
+            #     is_saturated = 1 if not saturated_segments.empty else 0
+            #     all_postprandial_df.at[index, 'is_saturated_at_39'] = is_saturated
+            # else:
+            #     all_postprandial_df.at[index, 'is_saturated_at_39'] = 0
+            #     all_postprandial_df.at[index, 'postprandial_glucose_min'] = np.nan
+                
+            
+            # # MINIMUM GLUCOSE VALUE for Regression Target
+            # postprandial_glucose_filtered = glucose_series_filtered.loc[analysis_start_time:meal_end]
+            # if not postprandial_glucose_filtered.empty and not postprandial_glucose_filtered.isnull().all():
+            #     all_postprandial_df.at[index, 'postprandial_glucose_min'] = postprandial_glucose_filtered.min()
+            # else:
+            #     all_postprandial_df.at[index, 'postprandial_glucose_min'] = np.nan
+                
+                
+
+            # # Check if there is valid data in the window to perform calculations
+            # if not postprandial_glucose.empty and not postprandial_glucose.isnull().all():
+            #     # Basic Stats (Media, SD, Range) 
+            #     all_postprandial_df.at[index, 'postprandial_mean_glucose'] = postprandial_glucose.mean()
+            #     all_postprandial_df.at[index, 'postprandial_std_glucose'] = postprandial_glucose.std()
+            #     all_postprandial_df.at[index, 'postprandial_range'] = postprandial_glucose.max() - postprandial_glucose.min()
+                
+
+            #     # Time-In-Range (TIR) calculation as a proportion of the time in the window
+            #     total_samples_in_window = postprandial_glucose.notna().sum()
+            #     if total_samples_in_window > 0:
+            #         # Time in Target (70-180 mg/dL)
+            #         tir_target = ((postprandial_glucose >= 70) & (postprandial_glucose <= 180)).sum() / total_samples_in_window
+            #         all_postprandial_df.at[index, 'postprandial_tir_target'] = tir_target
+
+            #         # Time in L1 Hyperglycemia (181-250 mg/dL)
+            #         tir_l1_hyper = ((postprandial_glucose > 180) & (postprandial_glucose <= 250)).sum() / total_samples_in_window
+            #         all_postprandial_df.at[index, 'postprandial_tir_l1_hyper'] = tir_l1_hyper
+
+            #         # Time in L2 Hyperglycemia (> 250 mg/dL)
+            #         tir_l2_hyper = (postprandial_glucose > 250).sum() / total_samples_in_window
+            #         all_postprandial_df.at[index, 'postprandial_tir_l2_hyper'] = tir_l2_hyper
+
+            #         # Time in L1 Hypoglycemia (54-69 mg/dL)
+            #         tir_l1_hypo = ((postprandial_glucose >= 54) & (postprandial_glucose < 70)).sum() / total_samples_in_window
+            #         all_postprandial_df.at[index, 'postprandial_tir_l1_hypo'] = tir_l1_hypo
+
+            #         # Time in L2 Hypoglycemia (< 54 mg/dL), also known as Time Below Range (TBR) Level 2
+            #         tir_l2_hypo = (postprandial_glucose < 54).sum() / total_samples_in_window
+            #         all_postprandial_df.at[index, 'postprandial_tir_l2_hypo'] = tir_l2_hypo
+            
+            
+            # #------------------------------------------------------------------
+            # # 14. Short-Time features on the predictive window
+            # #------------------------------------------------------------------
+            # if pd.notna(time_to_peak1):
+            #     # Define the predictive window: 30 mins pre-meal to 15 mins post-peak
+            #     predictive_window_start = meal_start - pd.Timedelta(minutes=30)
+            #     peak_timestamp = meal_start + pd.Timedelta(minutes=time_to_peak1)
+            #     predictive_window_end = peak_timestamp + pd.Timedelta(minutes=15)
+                
+            #     # Ensure the window does not go beyond the end of the postprandial period
+            #     predictive_window_end = min(predictive_window_end, meal_end)
+                
+            #     predictive_glucose = glucose_series_filtered.loc[predictive_window_start:predictive_window_end]
+                
+            #     short_time_feats = self._calculate_short_time_features(predictive_glucose)
+            #     for key, value in short_time_feats.items():
+            #         all_postprandial_df.at[index, key] = value
             
             #------------------------------------------------------------------
             
@@ -1464,9 +1598,15 @@ class PostprandialFeatureExtractor:
 
 
         # Report the number of saturation events found
-        total_saturation_events = all_postprandial_df['is_saturated_at_39'].sum()
-        print(f"\nFound a total of {total_saturation_events} meal events with sensor saturation (glucose at 39 mg/dL).")
-        
+        total_meals_with_saturation = int(all_postprandial_df['is_saturated_at_39'].sum())
+        print(f"\nFound a total of {total_meals_with_saturation} meal events with sensor saturation.")
+        print(f"Applied spline interpolation to {interpolated_meal_counter} of these meals.")
+         
+        # total_saturation_events = int(all_postprandial_df['is_saturated_at_39'].sum())
+        # total_interpolated_events = int(all_postprandial_df['was_interpolated'].sum())
+        # print(f"\nFound a total of {total_saturation_events} meal events with sensor saturation.")
+        # print(f"Applied spline interpolation to {total_interpolated_events} of these events.")
+        # print(f"Applied spline interpolation to {interpolated_meal_counter} of these meals.")
         
         print("\n-->Estrazione feature completata<--")
 

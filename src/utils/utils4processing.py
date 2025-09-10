@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 from scipy.signal import butter, filtfilt
 from scipy.signal import find_peaks # Aggiunto qui perché usato dalle derivate per TMA_meal
+from scipy.interpolate import interp1d # For spline interpolation in saturation events
 
 def apply_zero_phase_low_pass_filter(signal, sampling_rate, cutoff_freq, order):
     """Applica un filtro passa-basso zero-phase."""
@@ -90,6 +91,98 @@ def calculate_derivative(signal, time):
     second_derivative[nan_mask] = np.nan
 
     return derivative, second_derivative
+
+
+def interpolate_saturation_events(glucose_series_to_interpolate: pd.Series, glucose_series_for_detection: pd.Series,
+                                  saturation_value: int = 39,
+                                  min_consecutive_samples: int = 3, points_around: int = 4,
+                                  interp_kind: str = 'quadratic') -> tuple[pd.Series, bool]:
+    """
+    Finds saturation events in a glucose series and interpolates them using a spline.
+
+    Args:
+        glucose_series_to_interpolate (pd.Series): The series whose values will be replaced (e.g., filtered data).
+        glucose_series_for_detection (pd.Series): The series used to find saturation events (e.g., raw data).
+        saturation_value (int): The glucose value indicating sensor saturation (e.g., 39).
+        min_consecutive_samples (int): Min number of consecutive samples to be a saturation event.
+        points_around (int): Number of valid data points before and after the event to use for fitting.
+        interp_kind (str): The kind of spline for scipy.interpolate.interp1d (e.g., 'linear', 'quadratic', 'cubic').
+
+    Returns:
+        tuple: A tuple containing:
+            - pd.Series: A new series with the saturated segments interpolated.
+            - bool: A flag that is True if an interpolation was performed, otherwise False.
+    """
+    # Create a copy of the series that will be modified
+    interpolated_series = glucose_series_to_interpolate.copy()
+    
+    # Initialize a flag to track if any changes are made
+    was_changed = False
+
+    # Use the raw/unfiltered series to accurately detect saturation events
+    is_saturated = (glucose_series_for_detection == saturation_value)
+    
+    # Find blocks of consecutive saturation events
+    saturated_groups = is_saturated.ne(is_saturated.shift()).cumsum() # .ne(...) checks where the mask changes
+                                                                      # .cumsum() turns these changes into group IDs
+                                                                      # .shift() shifts the series by one row
+    true_saturated_blocks = saturated_groups[is_saturated]
+    
+    if true_saturated_blocks.empty:
+        return interpolated_series, was_changed # No saturation, return original series
+
+    block_sizes = true_saturated_blocks.value_counts()
+    valid_event_groups = block_sizes[block_sizes >= min_consecutive_samples].index
+
+    for group_id in valid_event_groups:
+        event_indices = true_saturated_blocks[true_saturated_blocks == group_id].index
+        start_event_loc = glucose_series_to_interpolate.index.get_loc(event_indices[0])
+        end_event_loc = glucose_series_to_interpolate.index.get_loc(event_indices[-1])
+
+        # Define the window for finding context points (before and after the event)
+        context_start_loc = max(0, start_event_loc - points_around)
+        context_end_loc = min(len(glucose_series_to_interpolate) - 1, end_event_loc + points_around)
+        
+        # Get context indices and values, excluding the saturated part
+        context_indices_for_fit = []
+        # Before event
+        context_indices_for_fit.extend(range(context_start_loc, start_event_loc)) # range generates the indexes from context_start_loc to start_event_loc-1
+        # After event
+        context_indices_for_fit.extend(range(end_event_loc + 1, context_end_loc + 1))
+        
+        if len(context_indices_for_fit) < 4: # Need enough points for a robust fit
+            print(f"Warning: Not enough context points to interpolate event at {event_indices[0]}. Skipping.")
+            continue
+            
+        # Prepare data for interpolation
+        # Use numeric timestamps for x-axis
+        # These are the “anchor points” that the spline will be fit through
+        x_fit = glucose_series_to_interpolate.index[context_indices_for_fit].astype(np.int64) # numeric timestamps (x-coordinates)
+        y_fit = glucose_series_to_interpolate.iloc[context_indices_for_fit].values # glucose readings at those times (y-coordinates)
+
+        try:
+            # Create the interpolation function (spline)
+            spline = interp1d(x_fit, y_fit, kind=interp_kind, bounds_error=False, fill_value="extrapolate") # bounds_error=False ---> don’t crash if asked for values outside the known x-range
+                                                                                                            # fill_value="extrapolate" ---> if needed, allow extrapolation instead of returning NaN
+
+            # Get the timestamps of the saturated segment to be interpolated
+            # These are the time points where we need to fill in new values
+            x_interp = event_indices.astype(np.int64) # event_indices are the timestamps of the saturated readings
+                                                      # .astype(np.int64) converts them to numbers
+            
+            # Perform interpolation
+            y_interp = spline(x_interp)
+
+            # Replace the values in our copied series
+            interpolated_series.loc[event_indices] = y_interp
+            # Set the interpolation flag to True 
+            was_changed = True
+            
+        except Exception as e:
+            print(f"Error during interpolation for event at {event_indices[0]}: {e}")
+
+    return interpolated_series, was_changed
+
 
 def re_position_meals(df, derivative_threshold, second_derivative_threshold, search_window_before_meal, search_window_after_meal, sampling_rate_minutes):
     """
