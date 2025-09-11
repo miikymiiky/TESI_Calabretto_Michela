@@ -75,7 +75,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     
     # --- Parametri Specifici per DataVisualizer ---
     # Switch to easily change between analysis modes
-    ANALYSIS_MODE = 'regression'  # Options: 'classification' or 'regression'
+    ANALYSIS_MODE = 'classification'  # Options: 'classification' or 'regression'
 
     ANALIZER_PARAMS = {
         "data_file_path":os.path.join(COMMON_PARAMS["data_dir_db"],EXTRACTOR_PARAMS["output_filename_with_features"]), 
@@ -280,7 +280,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         elif ANALYSIS_MODE == 'regression':
             print("\n--- Running Regression Analysis ---")
             # Plot feature vs. target scatter plots
-            #analyzer.plot_distributions_by_target(num_cols_per_plot=3)
+            analyzer.plot_distributions_by_target(num_cols_per_plot=3)
             # Display features most correlated with the target
             regression_results, features_analyzed = analyzer.display_regression_correlations(top_n=25)
 
@@ -321,7 +321,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                         annotate_cells=True,
                         output_path='heatmap_top35_uncorrelated_regression.png'
                     )
-                
+                 
                 
                     # Summary Table from Statistical Tests with the most significant and less correlated features
                     print("\n\n" + "="*80)
@@ -350,7 +350,7 @@ if __name__ == "__main__":
     run_pipeline(
         run_preparation = False, # Esegui la preparazione dei dati
         visualize_preparation_steps = False, # Imposta a True per vedere i plot durante la preparazione (può essere molto verboso)
-        run_feature_extraction = False, # Esegui l'estrazione delle feature
+        run_feature_extraction = True, # Esegui l'estrazione delle feature
         run_visualization = False, # Avvia il visualizzatore interattivo
-        run_data_analysis = True  , 
+        run_data_analysis = False  , 
     )

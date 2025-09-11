@@ -12,26 +12,14 @@ import os
 import sys
 import matplotlib.pyplot as plt
 
-
-# Adjust the path to go up one level to the project root
-sys.path.append(os.path.join(os.path.dirname(__file__), '..'))
-from utils.utils4processing import interpolate_saturation_events
-
-
 def visualize_interpolated_events(
     features_db_path: str,
     data_dir: str,
     glucose_filename_pattern: str,
-    max_plots: int = 50  # Add a parameter to limit the plots
+    max_plots: int = 50
 ):
     """
     Finds and plots all meal events where saturation interpolation was applied.
-
-    Args:
-        features_db_path (str): Full path to the '...with_features.csv' file.
-        data_dir (str): Path to the main data directory.
-        glucose_filename_pattern (str): The filename pattern for processed glucose files.
-        max_plots (int): The maximum number of plots to display.
     """
     try:
         df = pd.read_csv(features_db_path)
@@ -46,12 +34,11 @@ def visualize_interpolated_events(
     total_found = len(interpolated_df)
 
     if total_found == 0:
-        print("ℹNo interpolated events found in the database. Nothing to visualize.")
+        print("No interpolated events found in the database. Nothing to visualize.")
         return
 
     print(f"Found {total_found} interpolated meal events to visualize.")
 
-    # Interactive prompt to handle a large number of plots
     plots_to_show = total_found
     if total_found > max_plots:
         user_input = input(f"Display all {total_found} plots? (This may take a while). "
@@ -60,7 +47,6 @@ def visualize_interpolated_events(
             plots_to_show = max_plots
             print(f"Showing the first {max_plots} plots...")
     
-    # Loop through each interpolated event and generate a plot
     for index, row in interpolated_df.head(plots_to_show).iterrows():
         subj_id = row['subj_id']
         meal_start = row['meal_time_start']
@@ -73,30 +59,45 @@ def visualize_interpolated_events(
             print(f"⚠️ Warning: Could not find glucose file for subject {subj_id}. Skipping.")
             continue
 
+
+        # Load and plot the specific columns
+
+        # Check if the final column exists. If not, the feature extraction hasn't been run yet.
+        if 'glucose_final_for_features' not in glucose_df.columns:
+            print(f"ERROR: Column 'glucose_final_for_features' not found in {glucose_file_path}.")
+            print("Please run the feature extraction step in main.py first.")
+            continue
+
+        # Get the series directly from the file
+        glucose_series_raw = glucose_df['glucose']
+        glucose_series_filtered_original = glucose_df['glucose_filtered']
+        glucose_series_final = glucose_df['glucose_final_for_features']
+
         plot_start = meal_start - pd.Timedelta(hours=1)
         plot_end = meal_end + pd.Timedelta(hours=1)
-        
-        glucose_series_raw = glucose_df['glucose'].loc[plot_start:plot_end]
-        glucose_series_filtered = glucose_df['glucose_filtered'].loc[plot_start:plot_end]
 
-        glucose_series_interpolated, was_changed = interpolate_saturation_events(
-            glucose_series_to_interpolate=glucose_series_filtered,
-            glucose_series_for_detection=glucose_series_raw
-        )
-       
-        changed_points_mask = (glucose_series_filtered != glucose_series_interpolated)
-        interpolated_segment = glucose_series_interpolated[changed_points_mask]
+        # Slice the series for plotting
+        glucose_raw_window = glucose_series_raw.loc[plot_start:plot_end]
+        glucose_filtered_original_window = glucose_series_filtered_original.loc[plot_start:plot_end]
+        glucose_final_window = glucose_series_final.loc[plot_start:plot_end]
+    
+        changed_points_mask = (glucose_filtered_original_window != glucose_final_window)
+        interpolated_segment = glucose_final_window[changed_points_mask]
         
         plt.style.use('seaborn-v0_8-whitegrid')
         fig, ax = plt.subplots(figsize=(14, 7))
+        
+        ax.plot(glucose_raw_window.index, glucose_raw_window, 
+                color='lightgray', marker='x', markersize=4, linestyle=':', 
+                label='Raw Glucose')
 
-        ax.plot(glucose_series_filtered.index, glucose_series_filtered, 
+        ax.plot(glucose_filtered_original_window.index, glucose_filtered_original_window, 
                 color='dodgerblue', marker='o', markersize=4, linestyle='-', 
                 label='Original Filtered Glucose')
 
-        ax.plot(glucose_series_interpolated.index, glucose_series_interpolated, 
+        ax.plot(glucose_final_window.index, glucose_final_window, 
                 color='red', linestyle='--', linewidth=2,
-                label='Interpolated Glucose')
+                label='Interpolated Glucose (Final)')
         
         if not interpolated_segment.empty:
             ax.scatter(interpolated_segment.index, interpolated_segment.values,
@@ -104,6 +105,9 @@ def visualize_interpolated_events(
 
         ax.axvline(meal_start, color='green', linestyle='--', label=f'Meal Start ({meal_start.strftime("%H:%M")})')
         ax.axvline(meal_end, color='purple', linestyle=':', label=f'Meal End ({meal_end.strftime("%H:%M")})')
+        
+        # Add a horizontal line for the saturation threshold 
+        ax.axhline(y=39, color='black', linestyle='-.', linewidth=1, alpha=0.7, label='Saturation Threshold (39 mg/dL)')
 
         ax.set_title(f"Interpolation Inspection\nSubject: {subj_id} | Meal Start: {meal_start.strftime('%Y-%m-%d %H:%M')}", fontsize=16)
         ax.set_xlabel("Time", fontsize=12)
