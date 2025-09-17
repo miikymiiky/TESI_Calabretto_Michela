@@ -17,6 +17,7 @@ from scipy.stats import pearsonr # for calculating Pearson correlation
 from scipy.stats import kruskal # libraries for statistical tests
 import pingouin as pg
 import scikit_posthocs as sp # alternative library to pingouin
+from scipy.stats import bootstrap
 
 pd.set_option('display.max_columns', None) # to display all columns of the results tables, no matter how wide the table is
 pd.set_option('display.width', 1000) # Set a wide display width to prevent line wrapping
@@ -280,7 +281,6 @@ class FeatureAnalyzer:
         plt.show()
     
     
-    # Correlation plot with the new features
     def plot_focused_correlation(self, feature_list, title='Focused Correlation Heatmap', figsize=(12, 10), output_path=None, annotate_cells=True):
         """
         Generates a correlation heatmap for a specific subset of features.
@@ -369,8 +369,20 @@ class FeatureAnalyzer:
                 continue
             
             try:
-                corr, pval = pearsonr(temp_df[feature], temp_df[target])
-                results.append({'Feature': feature, 'Pearson_r': corr, 'P-Value': pval})
+                # Use pingouin's correlation to get the CI
+                corr_res = pg.corr(temp_df[feature], temp_df[target])
+                if not corr_res.empty:
+                    r_val = corr_res['r'].iloc[0]
+                    pval = corr_res['p-val'].iloc[0]
+                    ci95 = corr_res['CI95%'].iloc[0]
+                    results.append({
+                        'Feature': feature,
+                        'Effect_Size_Type': "Pearson's r",
+                        'Effect_Size': r_val,
+                        'P-Value': pval,
+                        'Effect_Size_CI95%': ci95
+                    })
+
             except Exception as e:
                 print(f"Could not calculate correlation for '{feature}': {e}")
         
@@ -379,16 +391,27 @@ class FeatureAnalyzer:
             return
             
         # Create a DataFrame and sort by p-value
-        results_df = pd.DataFrame(results).sort_values(by='P-Value').reset_index(drop=True)
+        results_df = pd.DataFrame(results)
+        
+        # Format the CI column for readability
+        if 'Effect_Size_CI95%' in results_df.columns:
+            results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply( # .apply(...) applies a function element-wise to every entry in the Series
+                lambda x: f"[{x[0]:.3f}, {x[1]:.3f}]" if isinstance(x, (list, tuple)) else x # lambda x defines an anonymous function that takes one argument x
+                                                                                             # x[0] is the first element of x (the lower bound of the CI)
+                                                                                             # :.3f to format the number to 3 decimal places
+            )
+
+        # Sort based on ascending p-value 
+        results_df = results_df.sort_values(by='P-Value').reset_index(drop=True)
 
         # Print the top N features
-        print(f"\n--- Top {top_n} Most Significant Features for Regression ---")
-        print(results_df.head(top_n))
+        #print(f"\n--- Top {top_n} Most Significant Features for Regression ---")
+        #print(results_df.head(top_n))
 
         # Print all features
-        print("\n--- All Significant Features for Regression (Sorted by P-Value) ---")
-        with pd.option_context('display.max_rows', None): # Temporarily display all rows
-            print(results_df)
+        #print("\n--- All Significant Features for Regression (Sorted by P-Value) ---")
+        #with pd.option_context('display.max_rows', None): # Temporarily display all rows
+        #    print(results_df)
         
         # Save results to CSV 
         output_path = 'regression_feature_significance.csv'
@@ -557,13 +580,66 @@ class FeatureAnalyzer:
             plt.legend(title='Time Window Pre-Meal')
             plt.grid(axis='y', linestyle='--', alpha=0.7)
             plt.show()
+    
+   
+    
+    def _calculate_kruskal_epsilon_squared(self, *args): # *args ---> collects any number of positional arguments into a tuple
+        """
+        Helper for bootstrapping. Calculates epsilon-squared from Kruskal-Wallis,
+        handling the edge case where H is too small.
+        """
+        samples = [s for s in args if len(s) > 1] # samples is the list of input samples with at least 2 values each
+        if len(samples) < 2:
+            return np.nan
+
+        # Create a DataFrame for pingouin
+        df_list = []
+        for i, sample in enumerate(samples):
+            df_list.append(pd.DataFrame({'value': sample, 'group': i}))
+        df = pd.concat(df_list, ignore_index=True)
+
+        # Perform the test
+        kruskal_res = pg.kruskal(data=df, dv='value', between='group')
+    
+        if not isinstance(kruskal_res, pd.DataFrame) or kruskal_res.empty:
+            return np.nan
+
+        # Extract H, n, and k from the results
+        H = kruskal_res['H'].iloc[0]
+        k = len(samples) # Number of groups
+        n = len(df) # Get total sample size directly from the DataFrame length
+
+        # Avoid division by zero in the unlikely case n equals k
+        if n - k == 0:
+            return 0.0
+
+        # If H < k - 1, the effect size would be negative. Report it as 0.
+        if H < (k - 1):
+            return 0.0
+        else:
+            # Otherwise, calculate it using the correct formula
+            epsilon_squared = (H - k + 1) / (n - k)
+            return epsilon_squared
+    
+    
+    
+    def _calculate_anova_eta_squared(self, *args):
+        samples = [s for s in args if len(s) > 1]
+        if len(samples) < 2:
+            return np.nan
+        df_list = [pd.DataFrame({'value': sample, 'group': i}) for i, sample in enumerate(samples)]
+        df = pd.concat(df_list, ignore_index=True)
+        aov_res = pg.anova(data=df, dv='value', between='group')
+        if isinstance(aov_res, pd.DataFrame) and not aov_res.empty:
+            return aov_res.get('np2', pd.Series([np.nan])).iloc[0]
+        return np.nan
 
     
     
     def run_classification_tests(self):
         if self.analysis_type != 'classification':
             print("This function is designed for the classification task.")
-            return
+            return None, None
 
         print("\n--- Running Statistical Tests for Classification Feature Selection ---")
         
@@ -601,67 +677,131 @@ class FeatureAnalyzer:
             if temp_df.empty or temp_df[target].nunique() < 2:
                 continue
 
-            test_used, stat, pval, effect_size = "", np.nan, np.nan, np.nan
+            # Initialize all result variables
+            test_used, stat, pval = "", np.nan, np.nan
+            effect_size, effect_size_ci = np.nan, None
 
             try:
                 if feature in non_normal_features:
                     test_used = "Kruskal-Wallis"
-                    # Use pingouin's kruskal to get effect size (epsilon-squared)
-                    kruskal_res = pg.kruskal(data=temp_df, dv=feature, between=target)
+                    effect_size_type = "Epsilon-Squared"
                     
-                    # Check if the result is a valid DataFrame before accessing
-                    if isinstance(kruskal_res, pd.DataFrame) and not kruskal_res.empty:
-                        stat = kruskal_res['H'].iloc[0]
-                        pval = kruskal_res['p-unc'].iloc[0]
-                        # Safely get effect size, as 'eps' may not always be present
-                        effect_size = kruskal_res['eps'].iloc[0] if 'eps' in kruskal_res.columns else np.nan
-                
+                    kruskal_res = pg.kruskal(data=temp_df, dv=feature, between=target)
+                    stat = kruskal_res['H'].iloc[0]
+                    pval = kruskal_res['p-unc'].iloc[0]
+                    
+                    effect_size = self._calculate_kruskal_epsilon_squared(*[g[feature].values for _, g in temp_df.groupby(target, observed=False)]) # temp_df.groupby(target, observed=False) ---> groups the DataFrame by the target column
+                                                                                                                                                    # for _, g in ... ---> loops over the groups, ignoring the group name
+                                                                                                                                                    # g[feature].values ---> selects the column feature from that group, and take its NumPy array of values
+                                                                                                                                                    # The result is a list of arrays, one per group
+
+                    
+                    groups = [group[feature].values for _, group in temp_df.groupby(target, observed=False)]
+                    if all(len(g) > 1 for g in groups):
+                        # Exploit the scipy.stats function bootstrap() for bootstrapping
+                        bootstrap_res = bootstrap(
+                            data=tuple(groups), 
+                            statistic=self._calculate_kruskal_epsilon_squared, 
+                            n_resamples=5000, 
+                            confidence_level=0.95, 
+                            method='percentile', 
+                            random_state=42 # sets the seed for reproducibility
+                        )
+                        effect_size_ci = (bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high)
                 else:
                     test_used = "Welch's ANOVA"
-                    # Use Welch's ANOVA for the robust F-stat and p-value
+                    effect_size_type = "Partial Eta-Squared"
+
                     aov = pg.welch_anova(dv=feature, between=target, data=temp_df)
+                    stat = aov['F'].iloc[0]
+                    pval = aov['p-unc'].iloc[0]
+
+                    aov_effect = pg.anova(dv=feature, between=target, data=temp_df)
+                    effect_size = aov_effect.get('np2', pd.Series([np.nan])).iloc[0]
                     
-                    # Also check here for Welch's ANOVA
-                    if isinstance(aov, pd.DataFrame) and not aov.empty:
-                        stat = aov['F'].iloc[0]
-                        pval = aov['p-unc'].iloc[0]
+                    groups = [group[feature].values for _, group in temp_df.groupby(target, observed=False)]
+                    if all(len(g) > 1 for g in groups):
+                        bootstrap_res = bootstrap(
+                            data=tuple(groups), 
+                            statistic=self._calculate_anova_eta_squared, 
+                            n_resamples=5000, 
+                            confidence_level=0.95, 
+                            method='percentile', 
+                            random_state=42
+                        )
+                        effect_size_ci = (bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high)
                 
-                        # Effect size calculation also needs protection
-                        aov_effect = pg.anova(dv=feature, between=target, data=temp_df)
-                        if isinstance(aov_effect, pd.DataFrame) and 'np2' in aov_effect.columns:
-                            effect_size = aov_effect['np2'].iloc[0]
-                        else:
-                            effect_size = np.nan
-                
-                # Only append results if the test was successfully performed
                 if pd.notna(pval):
                     results.append({
-                        'Feature': feature, 'Test': test_used, 'Statistic': stat, 
-                        'P-Value': pval, 'Effect_Size': effect_size
-                })
-
+                        'Feature': feature, 
+                        'Test': test_used, 
+                        'Statistic': stat, 
+                        'P-Value': pval, 
+                        'Effect_Size_Type': effect_size_type, 
+                        'Effect_Size': effect_size, 
+                        'Effect_Size_CI95%': effect_size_ci
+                    })
+   
             except Exception as e:
-                print(f"Could not perform test for feature '{feature}': {e}")
+                print(f"Could not perform test for feature '{feature}'. Reason: {type(e).__name__} - {e}")
 
         if not results:
             print("No statistical test results were generated.")
-            return
+            return pd.DataFrame(), features_to_test
         
         # Add the new Effect_Size column to the DataFrame
-        results_df = pd.DataFrame(results).sort_values(by='P-Value').reset_index(drop=True)
+        # Create DataFrame and format the new CI column for better readability
+        results_df = pd.DataFrame(results)
+        if 'Effect_Size_CI95%' in results_df.columns:
+             results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply(
+                lambda x: f"[{x[0]:.3f}, {x[1]:.3f}]" if isinstance(x, tuple) and len(x) == 2 else x
+            )
+
+        results_df = results_df.sort_values(by='P-Value').reset_index(drop=True)
+
+        #print("\n--- Top 25 Most Significant Features for Classification (with Effect Size CIs) ---")
+        #print(results_df.head(25))
+
         
-        print("\n--- Top 25 Most Significant Features for Classification ---")
-        print(results_df.head(25))
-        
-        print("\n--- All Significant Features for Classification (Sorted by P-Value) ---")
-        with pd.option_context('display.max_rows', None):
-            print(results_df)
+        #print("\n--- All Significant Features for Classification (Sorted by P-Value) ---")
+        #with pd.option_context('display.max_rows', None):
+        #    print(results_df)
         
         output_path = 'classification_omnibus_tests.csv'
         results_df.to_csv(output_path, index=False)
         print(f"\nFull omnibus test results saved to: {output_path}")
         
         return results_df, features_to_test
+    
+    
+    
+    def _calculate_rank_biserial(self, sample1, sample2):
+        """
+        Helper function for bootstrapping. Calculates the rank-biserial
+        correlation between two samples using the Mann-Whitney U test.
+        """
+        if len(sample1) < 2 or len(sample2) < 2:
+            return np.nan
+        
+        # Pingouin's mwu function calculates the rank-biserial correlation (rbc)
+        mwu_res = pg.mwu(sample1, sample2)
+        
+        if isinstance(mwu_res, pd.DataFrame) and not mwu_res.empty:
+            return mwu_res['RBC'].iloc[0]
+        return np.nan
+    
+    
+    
+    def _calculate_hedges_g(self, sample1, sample2):
+        """
+        Helper function for bootstrapping. Calculates Hedge's g between two samples.
+        """
+        if len(sample1) < 2 or len(sample2) < 2:
+            return np.nan
+        # Use pingouin's effect size calculator
+        # We use hedge because it's the effect size provided by Games-Howell
+        eff_size = pg.compute_effsize(sample1, sample2, eftype='hedges')
+        return eff_size
     
     
     
@@ -673,7 +813,7 @@ class FeatureAnalyzer:
         """
         if self.analysis_type != 'classification':
             print("This function is designed for the classification task.")
-            return
+            return 
 
         significant_features_df = significant_features_df[significant_features_df['P-Value'] < 0.05].copy()
 
@@ -695,45 +835,64 @@ class FeatureAnalyzer:
             
             try:
                 if omnibus_test == "Welch's ANOVA":
-                    # Use Pingouin for Games-Howell
-                    pairwise_df = pg.pairwise_gameshowell(data=self.df, dv=feature, between=target)
-                    test_name = "Games-Howell"
-                    
-                    # Parse Pingouin's DataFrame format
+                    pairwise_df, test_name = pg.pairwise_gameshowell(data=self.df, dv=feature, between=target), "Games-Howell"
                     for _, posthoc_row in pairwise_df.iterrows():
-                        group1 = self.target_label_map.get(posthoc_row['A'], str(posthoc_row['A']))
-                        group2 = self.target_label_map.get(posthoc_row['B'], str(posthoc_row['B']))
-                        stat_val = posthoc_row.get('T', np.nan)
-                        pval = posthoc_row.get('pval', np.nan)
-
+                        group1_idx, group2_idx = int(posthoc_row['A']), int(posthoc_row['B'])
+                        group1_label, group2_label = self.target_label_map.get(group1_idx, f"Group {group1_idx}"), self.target_label_map.get(group2_idx, f"Group {group2_idx}")
+                        sample1, sample2 = self.df[self.df[target] == group1_idx][feature].dropna().values, self.df[self.df[target] == group2_idx][feature].dropna().values
+                        effect_size, effect_size_ci = self._calculate_hedges_g(sample1, sample2), (np.nan, np.nan)
+                        if len(sample1) > 1 and len(sample2) > 1:
+                            bootstrap_res = bootstrap(
+                                data=(sample1, sample2), 
+                                statistic=lambda s1, s2: self._calculate_hedges_g(s1, s2), 
+                                n_resamples=2500, 
+                                confidence_level=0.95, 
+                                method='percentile', 
+                                random_state=42
+                            )
+                            effect_size_ci = (bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high)
                         posthoc_results.append({
-                            'Feature': feature, 'Comparison': f"{group1} vs. {group2}",
-                            'Test': test_name, 'Statistic': stat_val, 'P-Value': pval
+                            'Feature': feature, 
+                            'Comparison': f"{group1_label} vs. {group2_label}", 
+                            'Test': test_name, 'Statistic': posthoc_row.get('T', np.nan), 
+                            'P-Value': posthoc_row.get('pval', np.nan), 
+                            'Effect_Size_Type': "Hedge's g", 
+                            'Effect_Size': effect_size, 
+                            'Effect_Size_CI95%': effect_size_ci
                         })
-
+                        
                 elif omnibus_test == "Kruskal-Wallis":
-                    # Use scikit-posthocs for Dunn's test
-                    # The observed=False argument silences the FutureWarning
                     grouped_data = [group[feature].dropna() for _, group in self.df.groupby(target, observed=False)]
+                    if len(grouped_data) < 2: continue
                     p_values = sp.posthoc_dunn(grouped_data, p_adjust='holm')
-                    test_name = "Dunn"
-                    
-                    # Parse scikit-posthocs's matrix format
-                    group_indices = sorted(self.df[target].dropna().unique())
-                    p_values.columns = group_indices
-                    p_values.index = group_indices
-
-                    for i in range(len(group_indices)):
-                        for j in range(i + 1, len(group_indices)):
-                            group1_idx = group_indices[i]
-                            group2_idx = group_indices[j]
-                            group1_label = self.target_label_map.get(group1_idx)
-                            group2_label = self.target_label_map.get(group2_idx)
-                            
+                    group_indices_from_target = sorted(self.df[target].dropna().unique())
+                    p_values.columns, p_values.index = group_indices_from_target, group_indices_from_target
+                    for i in range(len(grouped_data)):
+                        for j in range(i + 1, len(grouped_data)):
+                            group1_label_val, group2_label_val = group_indices_from_target[i], group_indices_from_target[j]
+                            group1_name, group2_name = self.target_label_map.get(group1_label_val, f"Group {group1_label_val}"), self.target_label_map.get(group2_label_val, f"Group {group2_label_val}")
+                            sample1, sample2 = grouped_data[i], grouped_data[j]
+                            effect_size, effect_size_ci = self._calculate_rank_biserial(sample1, sample2), (np.nan, np.nan)
+                            if len(sample1) > 1 and len(sample2) > 1:
+                                bootstrap_res = bootstrap(
+                                    data=(sample1, sample2), 
+                                    statistic=lambda s1, s2: self._calculate_rank_biserial(s1, s2), 
+                                    n_resamples=2500, 
+                                    confidence_level=0.95, 
+                                    method='percentile', 
+                                    random_state=42
+                                )
+                                effect_size_ci = (bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high)
                             posthoc_results.append({
-                                'Feature': feature, 'Comparison': f"{group1_label} vs. {group2_label}",
-                                'Test': test_name, 'Statistic': np.nan, 'P-Value': p_values.loc[group1_idx, group2_idx]
+                                'Feature': feature, 
+                                'Comparison': f"{group1_name} vs. {group2_name}", 
+                                'Test': "Dunn's", 'Statistic': np.nan, 
+                                'P-Value': p_values.loc[group1_label_val, group2_label_val], 
+                                'Effect_Size_Type': "Rank-Biserial Corr.", 
+                                'Effect_Size': effect_size, 
+                                'Effect_Size_CI95%': effect_size_ci
                             })
+   
             except Exception as e:
                 print(f"Could not perform post-hoc test for feature '{feature}': {e}")
                 
@@ -743,19 +902,25 @@ class FeatureAnalyzer:
         
         # Create the final, separate DataFrame from the collected results
         results_df = pd.DataFrame(posthoc_results)
+        
+        # Format the CI column
+        if 'Effect_Size_CI95%' in results_df.columns:
+            results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply(
+                lambda x: f"[{x[0]:.3f}, {x[1]:.3f}]" if isinstance(x, (list, tuple)) and pd.notna(x[0]) else x
+            )
 
         
-        print("\n--- Pairwise Comparisons for Top 25 Most Significant Features ---")
+        #print("\n--- Pairwise Comparisons for Top 25 Most Significant Features ---")
         # Filter the detailed results to show only the top 25 features
-        top_25_features = significant_features_df['Feature'].head(25).tolist()
-        top_25_posthoc_df = results_df[results_df['Feature'].isin(top_25_features)].copy()
+        #top_25_features = significant_features_df['Feature'].head(25).tolist()
+        #top_25_posthoc_df = results_df[results_df['Feature'].isin(top_25_features)].copy()
         # Ensure the feature order is maintained for the printout
-        top_25_posthoc_df['Feature'] = pd.Categorical(top_25_posthoc_df['Feature'], categories=top_25_features, ordered=True)
-        print(top_25_posthoc_df.sort_values('Feature'))
+        #top_25_posthoc_df['Feature'] = pd.Categorical(top_25_posthoc_df['Feature'], categories=top_25_features, ordered=True)
+        #print(top_25_posthoc_df.sort_values('Feature'))
 
-        print("\n--- All Significant Pairwise Comparisons (Ordered by Omnibus Test Significance) ---")
-        with pd.option_context('display.max_rows', None):
-            print(results_df)
+        #print("\n--- All Significant Pairwise Comparisons (Ordered by Omnibus Test Significance) ---")
+        #with pd.option_context('display.max_rows', None):
+        #    print(results_df)
         
         # Save results to CSV
         output_path = 'classification_posthoc_tests.csv'

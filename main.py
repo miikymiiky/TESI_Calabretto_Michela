@@ -18,7 +18,8 @@ plt.close('all')
 
 
 def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualization=True, 
-                 visualize_preparation_steps=False, run_data_analysis = False):
+                 visualize_preparation_steps=False, run_data_analysis = False,
+                 RELOAD_STATS_FROM_CSV=True): # Flag for the effect size and CIs computation ---> True: loads the saved values from the csv files; False: runs the entire extrapolation process (bootstraping, ecc...)  
     
     """
     Pipeline di elaborazione dei dati.
@@ -28,6 +29,8 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         run_feature_extraction (bool): Se True, estrazione delle feature.
         run_visualization (bool): Se True, visualizzatore dati.
         visualize_preparation_steps (bool): Se True, mostra i plot di debug per ogni soggetto.
+        run_data_analysis (bool): Se True, esegue l'analisi statistica.
+        RELOAD_STATS_FROM_CSV (bool): Se True, carica i risultati statistici da CSV invece di ricalcolarli.
     """
 
     # --- Parametri Comuni ---
@@ -186,15 +189,45 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         # 2. Show basic info and missing values
         analyzer.display_basic_info()
         
+        
+        # BLOCK to handle loading vs. calculating of effect sizes and CIs
+        if RELOAD_STATS_FROM_CSV:
+            print("\n>>> RELOADING pre-computed statistics from CSV files. Skipping calculations. <<<")
+            if ANALYSIS_MODE == 'classification':
+                try:
+                    significant_features = pd.read_csv('classification_omnibus_tests.csv')
+                    posthoc_results = pd.read_csv('classification_posthoc_tests.csv')
+                    features_analyzed = significant_features['Feature'].tolist() 
+                    print("Successfully loaded classification omnibus and post-hoc results.")
+                except FileNotFoundError:
+                    print("\nERROR: Could not find result CSVs. Please run with RELOAD_STATS_FROM_CSV=False first.")
+                    return
+            elif ANALYSIS_MODE == 'regression':
+                try:
+                    regression_results = pd.read_csv('regression_feature_significance.csv')
+                    features_analyzed = regression_results['Feature'].tolist()
+                    print("Successfully loaded regression results.")
+                except FileNotFoundError:
+                    print("\nERROR: Could not find result CSV. Please run with RELOAD_STATS_FROM_CSV=False first.")
+                    return
+        else:
+            print("\n>>> RUNNING all statistical calculations. This may take some time... <<<")
+            if ANALYSIS_MODE == 'classification':
+                significant_features, features_analyzed = analyzer.run_classification_tests()
+                if significant_features is not None and not significant_features.empty:
+                    posthoc_results = analyzer.run_posthoc_tests(significant_features)
+                else:
+                    posthoc_results = pd.DataFrame() 
+            elif ANALYSIS_MODE == 'regression':
+                regression_results, features_analyzed = analyzer.display_regression_correlations(top_n=25)
+       
+        
+        # This part of the script now uses the data that was either loaded or calculated above
         # Run analysis based on the selected mode
         if ANALYSIS_MODE == 'classification':
             print("\n--- Running Classification Analysis ---")
             # Box Plots
-            analyzer.plot_distributions_by_target(num_cols_per_plot=3)
-            
-            # Call the statistical test method 
-            # Step 1: Run the main statistical tests
-            significant_features, features_analyzed = analyzer.run_classification_tests()
+            #analyzer.plot_distributions_by_target(num_cols_per_plot=3)
             
             
             # Number of Features Analyzed
@@ -204,9 +237,18 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
 
             
 
-            # Step 2: If there are significant features, run the post-hoc tests
+            # If there are significant features, run the post-hoc tests
             if significant_features is not None and not significant_features.empty:
-                posthoc_results = analyzer.run_posthoc_tests(significant_features)
+                
+                print("\n--- Top 25 Most Significant Features for Classification (with Effect Size CIs) ---")
+                print(significant_features.head(25))
+                print("\n--- All Significant Features for Classification (Sorted by P-Value) ---")
+                with pd.option_context('display.max_rows', None):
+                    print(significant_features)
+                
+                print("\n--- All Significant Pairwise Comparisons (Ordered by Omnibus Test Significance) ---")
+                with pd.option_context('display.max_rows', None):
+                    print(posthoc_results)
             
                 # --- Heatmap 1: Top 25 Most Significant Features ---
                 print("\n--- Generating Correlation Heatmap for Top 25 Classification Features ---")
@@ -264,7 +306,15 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                         # 1. Filter and print the omnibus test results (ANOVA/Kruskal-Wallis)
                         final_omnibus_summary = significant_features[significant_features['Feature'].isin(uncorrelated_features)]
                         print("\n--- Omnibus Test Results (ANOVA / Kruskal-Wallis) ---")
-                        print(final_omnibus_summary)
+                        columns_to_show = [
+                            'Feature', 
+                            'Test', 
+                            'P-Value', 
+                            'Effect_Size_Type', 
+                            'Effect_Size', 
+                            'Effect_Size_CI95%'
+                        ]
+                        print(final_omnibus_summary[columns_to_show])
 
                         # 2. Filter and print the pairwise post-hoc results
                         if posthoc_results is not None and not posthoc_results.empty:
@@ -272,7 +322,9 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                             # For better readability, sort by the original feature significance order
                             final_posthoc_summary['Feature'] = pd.Categorical(final_posthoc_summary['Feature'], categories=uncorrelated_features, ordered=True)
                             print("\n--- Pairwise Post-Hoc Test Results (Games-Howell / Dunn) ---")
-                            print(final_posthoc_summary.sort_values('Feature'))
+                            #print(final_posthoc_summary.sort_values('Feature'))
+                            with pd.option_context('display.max_rows', None):
+                                print(final_posthoc_summary.sort_values('Feature'))
                         
                         print("\n" + "="*80 + "\n")
                 
@@ -280,10 +332,8 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         elif ANALYSIS_MODE == 'regression':
             print("\n--- Running Regression Analysis ---")
             # Plot feature vs. target scatter plots
-            analyzer.plot_distributions_by_target(num_cols_per_plot=3)
-            # Display features most correlated with the target
-            regression_results, features_analyzed = analyzer.display_regression_correlations(top_n=25)
-
+            #analyzer.plot_distributions_by_target(num_cols_per_plot=3)
+   
 
             # Number of Features Analyzed
             if features_analyzed:
@@ -294,6 +344,12 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
             
             # Generate heatmap for top regression features 
             if regression_results is not None and not regression_results.empty:
+                
+                print("\n--- Top 25 Most Significant Features for Regression ---")
+                print(regression_results.head(25))
+                print("\n--- All Significant Features for Regression (Sorted by P-Value) ---")
+                with pd.option_context('display.max_rows', None):
+                    print(regression_results)
                 
                 # --- Heatmap 1: Top 25 Most Significant Features ---
                 print("\n--- Generating Correlation Heatmap for Top 25 Regression Features ---")
@@ -331,7 +387,14 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                     # 1. Filter and print the regression correlation results
                     final_regression_summary = regression_results[regression_results['Feature'].isin(uncorrelated_reg_features)]
                     print("\n--- Pearson Correlation Results ---")
-                    print(final_regression_summary)
+                    columns_to_show = [
+                        'Feature', 
+                        'Effect_Size_Type', 
+                        'Effect_Size', 
+                        'P-Value', 
+                        'Effect_Size_CI95%'
+                    ]
+                    print(final_regression_summary[columns_to_show])
                     
                     print("\n" + "="*80 + "\n")
                     
@@ -350,7 +413,8 @@ if __name__ == "__main__":
     run_pipeline(
         run_preparation = False, # Esegui la preparazione dei dati
         visualize_preparation_steps = False, # Imposta a True per vedere i plot durante la preparazione (può essere molto verboso)
-        run_feature_extraction = True, # Esegui l'estrazione delle feature
+        run_feature_extraction = False, # Esegui l'estrazione delle feature
         run_visualization = False, # Avvia il visualizzatore interattivo
-        run_data_analysis = False  , 
+        run_data_analysis = True  , 
+        RELOAD_STATS_FROM_CSV = True # Set to True to load, False to recalculate the effect size and CIs
     )

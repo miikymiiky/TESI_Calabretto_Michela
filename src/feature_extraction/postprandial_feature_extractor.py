@@ -1226,7 +1226,7 @@ class PostprandialFeatureExtractor:
             if analysis_start_time >= meal_end:
                 continue
             
-              postprandial_glucose_original = glucose_series.loc[analysis_start_time:meal_end]
+            postprandial_glucose_original = glucose_series.loc[analysis_start_time:meal_end]
             
             if not postprandial_glucose_original.empty:
                 # This logic will find consecutive blocks of '39'
