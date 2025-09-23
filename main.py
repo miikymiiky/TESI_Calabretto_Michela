@@ -12,13 +12,14 @@ from src.data_preparation.dataset_preparer import DatasetPreparer
 from src.feature_extraction.postprandial_feature_extractor import PostprandialFeatureExtractor
 from src.data_visualization.data_visualizer import DataVisualizer
 from src.data_analysis.feature_analyzer import FeatureAnalyzer
+from src.training.model_trainer import ModelTrainer
 import pandas as pd
 
 plt.close('all')
 
 
 def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualization=True, 
-                 visualize_preparation_steps=False, run_data_analysis = False,
+                 visualize_preparation_steps=False, run_data_analysis = False, run_model_training=True,
                  RELOAD_STATS_FROM_CSV=True): # Flag for the effect size and CIs computation ---> True: loads the saved values from the csv files; False: runs the entire extrapolation process (bootstraping, ecc...)  
     
     """
@@ -86,6 +87,19 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         "classification_target": 'target_hypoglycemia',
         "regression_target": 'postprandial_glucose_min',
     }
+    
+    # --- Parametri Specifici per ModelTrainer ---
+    TRAINER_PARAMS = {
+        "data_file_path": os.path.join(COMMON_PARAMS["data_dir_db"], EXTRACTOR_PARAMS["output_filename_with_features"]),
+        "analysis_type": ANALYSIS_MODE,
+        "classification_target": 'target_hypoglycemia',
+        "regression_target": 'postprandial_glucose_min',
+        "test_size": 0.20, # 20% for the test set
+        "random_state": 42 # For reproducible results
+    }
+
+
+
 
     if run_preparation:
         print("\n--- Fase 1: Preparazione del Dataset ---")
@@ -97,6 +111,9 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
             print("La preparazione del dataset non ha prodotto dati. Interruzione pipeline.")
             return
 
+    
+
+
     if run_feature_extraction:
         print("\n--- Fase 2: Estrazione delle Feature Post-prandiali ---")
         extractor = PostprandialFeatureExtractor(**EXTRACTOR_PARAMS)
@@ -106,11 +123,17 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
             print("L'estrazione delle feature non ha prodotto dati. Interruzione pipeline.")
             return
 
+    
+
+
     if run_visualization:
         print("\n--- Fase 3: Visualizzazione dei Dati ---")
         visualizer = DataVisualizer(**VISUALIZER_PARAMS)
         visualizer.run_interactive_visualizer()
     
+   
+    
+   
     if run_data_analysis:
         print(f"\n--- Fase 4: Analisi Esplorativa delle Feature ({ANALYSIS_MODE.capitalize()}) ---")
         analyzer = FeatureAnalyzer(**ANALIZER_PARAMS)
@@ -184,7 +207,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
             print(f"\n--- Number of Subjects Remaining After All Filters ---")
             print(f"Total unique subjects for the analysis: {final_subject_count}")
             
-            
+ 
         
         # 2. Show basic info and missing values
         analyzer.display_basic_info()
@@ -394,15 +417,88 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                         'P-Value', 
                         'Effect_Size_CI95%'
                     ]
-                    print(final_regression_summary[columns_to_show])
+ 
+                    # Convert the final DataFrame to a string and print it
+                    summary_string = final_regression_summary[columns_to_show].to_string(index=False)
+                    print(summary_string)
                     
                     print("\n" + "="*80 + "\n")
+        
+        
+        # --- Final Feature Selection for Machine Learning Models ---
+        
+        # Use the results from your primary analysis (classification or regression)
+        if ANALYSIS_MODE == 'classification':
+            results_for_selection = significant_features
+        else: # regression
+            results_for_selection = regression_results
+
+        if results_for_selection is not None and not results_for_selection.empty:
+            
+            # Helper function to print the summary tables 
+            def print_summary_tables(feature_sets_dict, title):
+                print("\n\n" + "="*80)
+                print(f" " * 20 + f"{title}")
+                print("="*80)
+                
+                for group_name, df_group in feature_sets_dict.items():
+                    print(f"\n--- Group: {group_name} (Top {len(df_group)} Features) ---")
+                    if df_group.empty:
+                        print("No features met the selection criteria for this group.")
+                    else:
+                        summary_cols = [
+                            'Feature', 'Test', 'P-Value', 'Effect_Size_Type', 
+                            'Effect_Size', 'Effect_Size_CI95%'
+                        ]
+                        if 'Test' not in df_group.columns:
+                            summary_cols.remove('Test')
+                        
+                        with pd.option_context('display.max_rows', None):
+                            print(df_group[summary_cols])
+                print("\n" + "="*80 + "\n")
+
+            # 1. Print the Version WITH the effect size filter 
+            print("\n>>> Generating feature sets WITH minimum effect size filter...")
+            effect_size_thresholds = {
+                "Epsilon-Squared": 0.01,
+                "Partial Eta-Squared": 0.01,
+                "Pearson's r": 0.1,
+            }
+
+            feature_sets_with_filter = analyzer.select_final_feature_sets(
+                significant_features_df=results_for_selection,
+                top_n=50,
+                correlation_threshold=0.8,
+                min_effect_sizes=effect_size_thresholds
+            )
+            print_summary_tables(feature_sets_with_filter, "SELECTED FEATURES (WITH EFFECT SIZE FILTER)")
+
+            # 2. Print the Version WITHOUT the effect size filter 
+            print("\n>>> Generating feature sets WITHOUT minimum effect size filter...")
+            
+            feature_sets_without_filter = analyzer.select_final_feature_sets(
+                significant_features_df=results_for_selection,
+                top_n=50,
+                correlation_threshold=0.8
+            )
+            print_summary_tables(feature_sets_without_filter, "SELECTED FEATURES (WITHOUT EFFECT SIZE FILTER)")
+            
+            print("\n" + "="*80 + "\n")
                     
    
         # Steps Plots
         print("\n--- Plotting Step Distributions by Meal Category ---")
         #analyzer.plot_postmeal_steps_by_meal_category()
         #analyzer.plot_steps_by_meal_category()
+    
+    
+    
+    
+    if run_model_training:
+        print("\n--- Fase 5: Training dei Modelli di Machine Learning ---")
+        trainer = ModelTrainer(**TRAINER_PARAMS)
+        # The train method will handle splitting and eventually the model training
+        trainer.train()
         
         
         
@@ -415,6 +511,7 @@ if __name__ == "__main__":
         visualize_preparation_steps = False, # Imposta a True per vedere i plot durante la preparazione (può essere molto verboso)
         run_feature_extraction = False, # Esegui l'estrazione delle feature
         run_visualization = False, # Avvia il visualizzatore interattivo
-        run_data_analysis = True  , 
+        run_data_analysis = True, 
+        run_model_training = False,
         RELOAD_STATS_FROM_CSV = True # Set to True to load, False to recalculate the effect size and CIs
     )

@@ -18,9 +18,27 @@ from scipy.stats import kruskal # libraries for statistical tests
 import pingouin as pg
 import scikit_posthocs as sp # alternative library to pingouin
 from scipy.stats import bootstrap
+import re
 
 pd.set_option('display.max_columns', None) # to display all columns of the results tables, no matter how wide the table is
 pd.set_option('display.width', 1000) # Set a wide display width to prevent line wrapping
+
+
+
+
+
+def format_ci_string(ci_value):
+    """
+    Cleanly formats a confidence interval tuple into a string.
+    """
+    low, high = ci_value
+    # np.isnan handles all types of NaN gracefully.
+    if np.isnan(low) or np.isnan(high):
+        return "[nan, nan]"
+    else:
+        return f"[{low:.3f}, {high:.3f}]"
+
+
 
 
 class FeatureAnalyzer:
@@ -126,6 +144,7 @@ class FeatureAnalyzer:
             print(f"Errore durante il caricamento del file {self.data_file_path}: {e}")
             return None
         
+        
     
     def _get_features_for_analysis(self):
         """
@@ -175,6 +194,7 @@ class FeatureAnalyzer:
         missing_percentage = self.df.isnull().sum() * 100 / len(self.df)
         print(missing_percentage[missing_percentage > 0].sort_values(ascending=False))
         
+       
         
     def filter_data(self, conditions: Union[Dict[str, Any], List[Dict[str, Any]]]): # type hint that specifies that the conditions argument can be either:
                                                                                     # - a single dictionary (Dict[str, Any]), where keys are strings and values can be of any type
@@ -255,6 +275,7 @@ class FeatureAnalyzer:
         # ha rimosso tutte le righe per determinate colonne, ma per questo caso non è strettamente necessario.
         # Rimangono comunque le stesse colonne, solo meno righe.
 
+
         
     def plot_correlations(self, figsize=(16, 12), output_path=None):
         """
@@ -281,6 +302,7 @@ class FeatureAnalyzer:
         plt.show()
     
     
+    
     def plot_focused_correlation(self, feature_list, title='Focused Correlation Heatmap', figsize=(12, 10), output_path=None, annotate_cells=True):
         """
         Generates a correlation heatmap for a specific subset of features.
@@ -302,6 +324,7 @@ class FeatureAnalyzer:
             plt.savefig(output_path)
             print(f"Focused heatmap saved to: {output_path}")
         plt.show()
+     
         
 
     def plot_feature_distributions(self, num_cols_per_plot=5, figsize=(15, 4)):
@@ -326,6 +349,7 @@ class FeatureAnalyzer:
                 axes[j].set_ylabel('Frequenza')
             plt.tight_layout()
             plt.show()
+     
             
     
     def display_regression_correlations(self, top_n=25): # top_n=25 ---> optional parameter that determines how many top correlated features to show (default 25)
@@ -374,7 +398,7 @@ class FeatureAnalyzer:
                 if not corr_res.empty:
                     r_val = corr_res['r'].iloc[0]
                     pval = corr_res['p-val'].iloc[0]
-                    ci95 = corr_res['CI95%'].iloc[0]
+                    ci95 = list(corr_res['CI95%'].iloc[0])
                     results.append({
                         'Feature': feature,
                         'Effect_Size_Type': "Pearson's r",
@@ -392,14 +416,10 @@ class FeatureAnalyzer:
             
         # Create a DataFrame and sort by p-value
         results_df = pd.DataFrame(results)
-        
-        # Format the CI column for readability
-        if 'Effect_Size_CI95%' in results_df.columns:
-            results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply( # .apply(...) applies a function element-wise to every entry in the Series
-                lambda x: f"[{x[0]:.3f}, {x[1]:.3f}]" if isinstance(x, (list, tuple)) else x # lambda x defines an anonymous function that takes one argument x
-                                                                                             # x[0] is the first element of x (the lower bound of the CI)
-                                                                                             # :.3f to format the number to 3 decimal places
-            )
+ 
+        # Format the CI column for readability 
+        results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply(format_ci_string)
+
 
         # Sort based on ascending p-value 
         results_df = results_df.sort_values(by='P-Value').reset_index(drop=True)
@@ -419,6 +439,7 @@ class FeatureAnalyzer:
         print(f"\nFull regression results saved to: {output_path}")
 
         return results_df, features_to_test
+
 
     
     def plot_distributions_by_target(self, num_cols_per_plot=3, figsize=(18, 6)):
@@ -694,8 +715,7 @@ class FeatureAnalyzer:
                                                                                                                                                     # for _, g in ... ---> loops over the groups, ignoring the group name
                                                                                                                                                     # g[feature].values ---> selects the column feature from that group, and take its NumPy array of values
                                                                                                                                                     # The result is a list of arrays, one per group
-
-                    
+                                                                                                                                                    
                     groups = [group[feature].values for _, group in temp_df.groupby(target, observed=False)]
                     if all(len(g) > 1 for g in groups):
                         # Exploit the scipy.stats function bootstrap() for bootstrapping
@@ -752,10 +772,7 @@ class FeatureAnalyzer:
         # Add the new Effect_Size column to the DataFrame
         # Create DataFrame and format the new CI column for better readability
         results_df = pd.DataFrame(results)
-        if 'Effect_Size_CI95%' in results_df.columns:
-             results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply(
-                lambda x: f"[{x[0]:.3f}, {x[1]:.3f}]" if isinstance(x, tuple) and len(x) == 2 else x
-            )
+        results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply(format_ci_string)
 
         results_df = results_df.sort_values(by='P-Value').reset_index(drop=True)
 
@@ -840,17 +857,29 @@ class FeatureAnalyzer:
                         group1_idx, group2_idx = int(posthoc_row['A']), int(posthoc_row['B'])
                         group1_label, group2_label = self.target_label_map.get(group1_idx, f"Group {group1_idx}"), self.target_label_map.get(group2_idx, f"Group {group2_idx}")
                         sample1, sample2 = self.df[self.df[target] == group1_idx][feature].dropna().values, self.df[self.df[target] == group2_idx][feature].dropna().values
-                        effect_size, effect_size_ci = self._calculate_hedges_g(sample1, sample2), (np.nan, np.nan)
+                        
+                        effect_size = self._calculate_hedges_g(sample1, sample2)
+                        effect_size_ci = (np.nan, np.nan) # Default to a clean NaN tuple
+
                         if len(sample1) > 1 and len(sample2) > 1:
-                            bootstrap_res = bootstrap(
-                                data=(sample1, sample2), 
-                                statistic=lambda s1, s2: self._calculate_hedges_g(s1, s2), 
-                                n_resamples=2500, 
-                                confidence_level=0.95, 
-                                method='percentile', 
-                                random_state=42
-                            )
-                            effect_size_ci = (bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high)
+                            try:
+                                bootstrap_res = bootstrap(
+                                    data=(sample1, sample2),
+                                    statistic=lambda s1, s2: self._calculate_hedges_g(s1, s2),
+                                    n_resamples=2500,
+                                    confidence_level=0.95,
+                                    method='percentile',
+                                    random_state=42
+                                )
+                                # Immediately check the result and standardize it
+                                low_ci, high_ci = bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high
+                                if pd.isna(low_ci) or pd.isna(high_ci):
+                                    effect_size_ci = (np.nan, np.nan) # Standardize
+                                else:
+                                    effect_size_ci = (low_ci, high_ci)
+                            except Exception:
+                                effect_size_ci = (np.nan, np.nan) # Catch any other errors
+                                                            
                         posthoc_results.append({
                             'Feature': feature, 
                             'Comparison': f"{group1_label} vs. {group2_label}", 
@@ -872,17 +901,29 @@ class FeatureAnalyzer:
                             group1_label_val, group2_label_val = group_indices_from_target[i], group_indices_from_target[j]
                             group1_name, group2_name = self.target_label_map.get(group1_label_val, f"Group {group1_label_val}"), self.target_label_map.get(group2_label_val, f"Group {group2_label_val}")
                             sample1, sample2 = grouped_data[i], grouped_data[j]
-                            effect_size, effect_size_ci = self._calculate_rank_biserial(sample1, sample2), (np.nan, np.nan)
+                            
+                            effect_size = self._calculate_rank_biserial(sample1, sample2)
+                            effect_size_ci = (np.nan, np.nan) # Default to a clean NaN tuple
+
                             if len(sample1) > 1 and len(sample2) > 1:
-                                bootstrap_res = bootstrap(
-                                    data=(sample1, sample2), 
-                                    statistic=lambda s1, s2: self._calculate_rank_biserial(s1, s2), 
-                                    n_resamples=2500, 
-                                    confidence_level=0.95, 
-                                    method='percentile', 
-                                    random_state=42
-                                )
-                                effect_size_ci = (bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high)
+                                try:
+                                    bootstrap_res = bootstrap(
+                                        data=(sample1, sample2),
+                                        statistic=lambda s1, s2: self._calculate_rank_biserial(s1, s2),
+                                        n_resamples=2500,
+                                        confidence_level=0.95,
+                                        method='percentile',
+                                        random_state=42
+                                    )
+                                    # Immediately check the result and standardize it
+                                    low_ci, high_ci = bootstrap_res.confidence_interval.low, bootstrap_res.confidence_interval.high
+                                    if pd.isna(low_ci) or pd.isna(high_ci):
+                                        effect_size_ci = (np.nan, np.nan) # Standardize
+                                    else:
+                                        effect_size_ci = (low_ci, high_ci)
+                                except Exception:
+                                    effect_size_ci = (np.nan, np.nan) # Catch any other errors 
+                            
                             posthoc_results.append({
                                 'Feature': feature, 
                                 'Comparison': f"{group1_name} vs. {group2_name}", 
@@ -903,11 +944,11 @@ class FeatureAnalyzer:
         # Create the final, separate DataFrame from the collected results
         results_df = pd.DataFrame(posthoc_results)
         
+        # Filter out the problematic feature
+        #results_df = results_df[results_df['Feature'] != 'was_interpolated'].copy()
+        
         # Format the CI column
-        if 'Effect_Size_CI95%' in results_df.columns:
-            results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply(
-                lambda x: f"[{x[0]:.3f}, {x[1]:.3f}]" if isinstance(x, (list, tuple)) and pd.notna(x[0]) else x
-            )
+        results_df['Effect_Size_CI95%'] = results_df['Effect_Size_CI95%'].apply(format_ci_string)
 
         
         #print("\n--- Pairwise Comparisons for Top 25 Most Significant Features ---")
@@ -928,6 +969,7 @@ class FeatureAnalyzer:
         print(f"\nFull post-hoc test results saved to: {output_path}")
             
         return results_df
+    
     
     
     def get_pairwise_comparison_results(self, significant_features_df):
@@ -990,6 +1032,7 @@ class FeatureAnalyzer:
         return significant_df[['Feature'] + list(comparisons.values())]
     
     
+    
     def select_uncorrelated_features(self, significant_features_df, top_n=35, threshold=0.8):
         """
         Selects a set of top features with low correlation among them.
@@ -1035,8 +1078,139 @@ class FeatureAnalyzer:
             if len(uncorrelated_features) >= top_n:
                 break
                 
-        print(f"\nSelected {len(uncorrelated_features)} features with correlation less than {threshold}.")
+        print(f"Selected {len(uncorrelated_features)} features with correlation less than {threshold}.")
+        #print(f"\nSelected {len(uncorrelated_features)} features with correlation less than {threshold}.")
         return uncorrelated_features
+    
+    
+    
+    def select_final_feature_sets(self, significant_features_df, top_n=50, correlation_threshold=0.8, p_value_threshold=0.05, min_effect_sizes=None):
+        """
+        Selects three distinct feature sets (pre-meal, post-meal predictive, mixed)
+        using a multi-step filtering and pruning process.
+
+        Args:
+            significant_features_df (pd.DataFrame): DataFrame from statistical tests, sorted by p-value.
+            top_n (int): The target number of features for each set.
+            correlation_threshold (float): The correlation cutoff for pruning.
+            p_value_threshold (float): The significance level to consider a feature.
+            min_effect_sizes (dict, optional): A dictionary mapping Effect_Size_Type to a minimum threshold. Defaults to None.
+
+
+        Returns:
+            dict: A dictionary containing three DataFrames for each feature set.
+        """
+        print(f"\n--- Starting Final Feature Selection (Top ~{top_n}, Correlation < {correlation_threshold}) ---")
+        
+        # Remove physical activity interaction features 
+        original_feature_count = len(significant_features_df)
+        significant_features_df = significant_features_df[~significant_features_df['Feature'].str.contains('_x_')].copy()
+        print(f"Removed {original_feature_count - len(significant_features_df)} interaction features ('_x_').")
+        print()
+        
+        # Define keywords to identify feature types based on their names
+        pre_meal_keywords = ['_pre_meal', 'time_since_previous_meal']
+        post_meal_predictive_keywords = [
+            'glucose_at_meal', 'rate_of_increase', 'time_to_first_glucose_peak',
+            'first_glucose_peak_value', '_before_peak1', 'auc_glucose_rise',
+            'lastROC', 'meanROC', '_during_rise', '_15min_post_peak',
+            'activity_x_', '_before_peak', 'time_from_meal_to_first_activity'
+        ]
+
+        # --- Helper function to perform the 4-step selection process ---
+        def get_top_features(results_df):
+            
+            # Step 1: Filter by Significance (P-Value)
+            filtered_df = results_df[results_df['P-Value'] < p_value_threshold].copy()
+            
+            # Step 2: Filter by Reliable Effect (Confidence Interval)
+            # This function checks if a CI string like '[0.1, 0.5]' crosses zero.
+            def ci_crosses_zero(ci_str):
+                if not isinstance(ci_str, str) or '[' not in ci_str:
+                    return True # Exclude if CI is not valid
+                try:
+                    # Use regex to split by comma.
+                    numbers = re.split(',', ci_str.strip('[]'))
+                    # Filter out any empty strings that might result from multiple spaces
+                    cleaned_numbers = [n for n in numbers if n]
+                    low, high = map(float, cleaned_numbers)
+                    return low <= 0 and high >= 0
+                except (ValueError, IndexError):
+                    return True # Exclude on any parsing error
+
+            effect_col = 'Effect_Size_CI95%'
+            if effect_col in filtered_df.columns:
+                reliable_mask = ~filtered_df[effect_col].apply(ci_crosses_zero)
+                filtered_df = filtered_df[reliable_mask]
+            
+            # Add optional filter for minimum effect size 
+            if min_effect_sizes and not filtered_df.empty:
+                initial_count = len(filtered_df)
+                
+                # Create a boolean mask for each condition in the dictionary
+                masks = []
+                for effect_type, threshold in min_effect_sizes.items():
+                    type_mask = filtered_df['Effect_Size_Type'] == effect_type
+                    
+                    # For correlations (r, RBC), check absolute value. For others (eta, epsilon), check direct value.
+                    if 'Corr' in effect_type or 'r' in effect_type:
+                        value_mask = filtered_df['Effect_Size'].abs() >= threshold
+                    else:
+                        value_mask = filtered_df['Effect_Size'] >= threshold
+                    
+                    masks.append(type_mask & value_mask)
+
+                # Also create a mask for rows whose Effect_Size_Type is NOT in our filter dictionary
+                # This ensures we don't drop features for which we haven't set a threshold
+                unfiltered_types_mask = ~filtered_df['Effect_Size_Type'].isin(min_effect_sizes.keys())
+                
+                # Combine all valid rows: those that meet a threshold OR those that weren't subject to a threshold
+                if masks:
+                    final_mask = pd.concat(masks, axis=1).any(axis=1) | unfiltered_types_mask
+                    filtered_df = filtered_df[final_mask]
+
+                print(f"Filtered {initial_count - len(filtered_df)} features based on minimum effect size.")
+
+
+            print(f"Found {len(filtered_df)} significant, reliable, and impactful features.")
+            
+            # Step 3 & 4: Prune for Multicollinearity and Select Top N
+            if filtered_df.empty:
+                return pd.DataFrame()
+            
+            uncorrelated_feature_names = self.select_uncorrelated_features(
+                filtered_df,
+                top_n=top_n,
+                threshold=correlation_threshold
+            )
+            
+            # Return the final summary table for the selected features
+            final_df = filtered_df[filtered_df['Feature'].isin(uncorrelated_feature_names)]
+            return final_df.head(top_n)
+
+        # Add headers to group the output 
+        all_features_df = significant_features_df.copy()
+
+        # Group 1: Pre-Meal Features Only
+        print("\n--- Processing Group: Pre-Meal ---")
+        pre_meal_mask = all_features_df['Feature'].str.contains('|'.join(pre_meal_keywords))
+        pre_meal_results = get_top_features(all_features_df[pre_meal_mask])
+
+        # Group 2: Post-Meal Predictive Features Only
+        print("\n--- Processing Group: Post-Meal Predictive ---")
+        post_meal_mask = all_features_df['Feature'].str.contains('|'.join(post_meal_predictive_keywords))
+        post_meal_results = get_top_features(all_features_df[post_meal_mask])
+
+        # Group 3: Mixed Features
+        print("\n--- Processing Group: Mixed (Pre & Post) ---")
+        mixed_mask = pre_meal_mask | post_meal_mask
+        mixed_results = get_top_features(all_features_df[mixed_mask])
+        
+        return {
+            "Pre-Meal": pre_meal_results,
+            "Post-Meal Predictive": post_meal_results,
+            "Mixed": mixed_results
+        }
             
 
 

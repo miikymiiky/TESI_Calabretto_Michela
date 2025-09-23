@@ -263,7 +263,7 @@ num_deep_hypo_events_1h_pre_meal,Hypo vs. Deep Hypo,Dunn's,,0.000111728512413967
 num_hypo_events_3h_pre_meal,No Hypo vs. Hypo,Dunn's,,2.937250080913098e-07,Rank-Biserial Corr.,-0.08854916358533571,"[-0.128, -0.050]"
 num_hypo_events_3h_pre_meal,No Hypo vs. Deep Hypo,Dunn's,,9.41073002287095e-10,Rank-Biserial Corr.,-0.20358627737904444,"[-0.291, -0.124]"
 num_hypo_events_3h_pre_meal,Hypo vs. Deep Hypo,Dunn's,,0.0011408021776456614,Rank-Biserial Corr.,-0.1138289272776265,"[-0.206, -0.024]"
-was_interpolated,No Hypo vs. Hypo,Games-Howell,-2.005738892714384,0.11180385416836236,Hedge's g,-0.22816486503372582,"(np.float64(nan), np.float64(nan))"
+was_interpolated,No Hypo vs. Hypo,Games-Howell,-2.005738892714384,0.11180385416836236,Hedge's g,-0.22816486503372582,"[nan, nan]"
 was_interpolated,No Hypo vs. Deep Hypo,Games-Howell,-8.031189202104507,1.7332801860447944e-12,Hedge's g,-3.5770943393453947,"[-4.231, -2.962]"
 was_interpolated,Hypo vs. Deep Hypo,Games-Howell,-7.819252228339111,5.158762306223252e-12,Hedge's g,-1.4816509632359358,"[-1.829, -1.179]"
 max_glucose_12h_pre_meal,No Hypo vs. Hypo,Games-Howell,7.694953347864196,0.0,Hedge's g,0.34831804233944624,"[0.260, 0.436]"
