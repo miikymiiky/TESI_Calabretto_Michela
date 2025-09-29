@@ -11,30 +11,63 @@ import numpy as np
 import os
 from sklearn.model_selection import train_test_split
 import random
+import json
+
+# Imports for ML Models and Evaluation 
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler
+
+# Models
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
+from lightgbm import LGBMClassifier
+
+# Evaluation Metrics
+from sklearn.metrics import (accuracy_score, confusion_matrix, classification_report, 
+                             roc_auc_score, average_precision_score, matthews_corrcoef,
+                             mean_absolute_error, mean_squared_error, r2_score)
+
+# Imports for Cross-Validation 
+from sklearn.model_selection import GroupKFold, cross_validate, GridSearchCV
+
+import warnings
+warnings.filterwarnings("ignore", category=UserWarning, message="X does not have valid feature names, but LGBMClassifier was fitted with feature names")
+
+
 
 class ModelTrainer:
     """
     A class to handle the training of machine learning models and deep learning algorithms for 
     predicting postprandial glycemic events.
     """
-    def __init__(self, data_file_path: str, analysis_type: str, 
+    def __init__(self, data_file_path: str, features_file_path: str, analysis_type: str, 
                  classification_target: str, regression_target: str,
-                 test_size: float = 0.2, random_state: int = 42):
+                 test_size: float = 0.2, random_state: int = 42, n_splits: int = 5):
         """
         Initializes the ModelTrainer.
 
         Args:
             data_file_path (str): Path to the CSV file with features.
+            features_file_path (str): Path to the JSON file with selected feature lists.
             analysis_type (str): Mode of analysis, 'classification' or 'regression'.
             classification_target (str): Target column for classification.
             regression_target (str): Target column for regression.
             test_size (float): The proportion of the dataset to allocate to the test set.
             random_state (int): Seed for reproducibility of the random split.
+            n_splits (int): Number of folds for cross validation.
         """
         self.data_file_path = data_file_path
+        self.features_file_path = features_file_path
         self.analysis_type = analysis_type
         self.test_size = test_size
         self.random_state = random_state
+        self.n_splits = n_splits
+        
+        self.classification_target = classification_target
+        self.regression_target = regression_target
 
         if self.analysis_type == 'classification':
             self.target_column = classification_target
@@ -44,15 +77,8 @@ class ModelTrainer:
             raise ValueError("analysis_type must be 'classification' or 'regression'")
 
         self.df = self._load_data()
-        
-        # These will be populated by the splitting method
-        self.X_train = None
-        self.X_test = None
-        self.y_train = None
-        self.y_test = None
-        
-        # Placeholder for features to be used in the model
-        self.features_for_prediction = []
+        self.feature_sets = self._load_feature_sets()
+        self.results_log = []
 
 
     def _load_data(self) -> pd.DataFrame:
@@ -72,6 +98,26 @@ class ModelTrainer:
             print(f"Error loading data: {e}")
             return pd.DataFrame()
     
+    
+    def _load_feature_sets(self) -> dict:
+        """Loads the pre-selected feature sets from a JSON file."""
+        print(f"\n--- Loading Pre-Selected Feature Sets from: {self.features_file_path} ---")
+        try:
+            with open(self.features_file_path, 'r') as f:
+                feature_sets = json.load(f)
+            print("Successfully loaded feature sets.")
+            for name, features in feature_sets.items():
+                print(f"  - Found set '{name}' with {len(features)} features.")
+            return feature_sets
+        except FileNotFoundError:
+            print(f"ERROR: Features file not found at '{self.features_file_path}'.")
+            print("Please run the data analysis step in main.py to generate it.")
+            return {}
+        except Exception as e:
+            print(f"ERROR: Could not load or parse features file: {e}")
+            return {} 
+        
+            
     
     def _split_data_by_subject(self):
         """
@@ -107,126 +153,372 @@ class ModelTrainer:
         train_subjects = [s for s in self.df['subj_id'].unique() if s not in test_subjects]
 
         # 5. Create the final DataFrames
-        train_df = self.df[self.df['subj_id'].isin(train_subjects)].copy()
-        test_df = self.df[self.df['subj_id'].isin(test_subjects)].copy()
+        self.train_df = self.df[self.df['subj_id'].isin(train_subjects)].copy()
+        self.test_df = self.df[self.df['subj_id'].isin(test_subjects)].copy()
         
-        print("\n--- Data Split Summary (Greedy Method) ---")
+        print("\n--- Data Split Summary  ---")
         print(f"Total subjects: {len(subjects)}")
         print(f"Training subjects ({len(train_subjects)})")
         print(f"Test subjects ({len(test_subjects)})")
         print("-" * 25)
         print(f"Total postprandial periods: {len(self.df)}")
-        print(f"Training periods: {len(train_df)} ({len(train_df) / len(self.df):.1%})")
-        print(f"Test periods: {len(test_df)} ({len(test_df) / len(self.df):.1%})")
+        print(f"Training periods: {len(self.train_df)} ({len(self.train_df) / len(self.df):.1%})")
+        print(f"Test periods: {len(self.test_df)} ({len(self.test_df) / len(self.df):.1%})")
         print("-" * 25)
+    
+    
+    
+    def _get_models(self) -> dict:
+        """Defines the models to be trained based on the analysis type."""
+        models = {}
+        if self.analysis_type == 'classification':
+            models["Logistic Regression"] = LogisticRegression(random_state=self.random_state, max_iter=5000, class_weight='balanced') # class_weight='balanced' ---> adjusts weights inversely proportional to class frequencies to avoid biased toward the majority 
+            models["Support Vector Machine"] = SVC(random_state=self.random_state, class_weight='balanced', probability=True) # probability=True to also add output probabilities
+            models["Random Forest"] = RandomForestClassifier(random_state=self.random_state, class_weight='balanced_subsample', n_jobs=-1) # class_weight='balanced_subsample' ---> for unbalanced datasets: creates balanced class weights for each individual tree based on its bootstrap sample
+            models["XGBoost"] = XGBClassifier(random_state=self.random_state, eval_metric='logloss', n_jobs=-1) # eval_metric='logloss' ---> logarithmic loss (evaluation metric used for the training)
+                                                                                                                                         # use_label_encoder=False ---> disables the automatic internal encoder
+            models["LightGBM"] = LGBMClassifier(random_state=self.random_state, class_weight='balanced',n_jobs=-1, verbose=-1) # verbose=-1 ---> to silence the prints in the console
+            
+            # ADD NEW CLASSIFICATION MODELS HERE
+        
+        elif self.analysis_type == 'regression':
+            models["Ridge Regression"] = Ridge(random_state=self.random_state)
+            
+            # ADD NEW REGRESSION MODELS HERE
+    
+            
+        return models
+    
+    
+    
+    def _get_parameter_grids(self) -> dict:
+        """Defines the hyperparameter grids for each model."""
+        param_grids = {}
+        if self.analysis_type == 'classification':
+            # The model type is essential for tuning within a pipeline.
+            param_grids["Logistic Regression"] = [
+                {
+                    'model__penalty': ['l1'], # Lasso regularization
+                    'model__solver': ['liblinear', 'saga'], # model__solver: algorithm used to optimize the logistic regression
+                                                            # 'liblinear' ---> good for small datasets; 'saga' ---> scales better to large datasets
+                    'model__C': [0.01, 0.1, 1, 10, 100] # model__C: Inverse of regularization strength. Smaller C means stronger regularization
+                },
+                {
+                    'model__penalty': ['l2'], # Ridge regularization
+                    'model__solver': ['lbfgs', 'liblinear', 'saga'], # 'lbfgs' ---> works well for small to medium datasets, but can also handle larger datasets efficiently
+                    'model__C': [0.01, 0.1, 1, 10, 100]
+                }
+            ]
+            param_grids["Support Vector Machine"] = [
+                {
+                    'model__kernel': ['linear'], # uses a simple straigth line as a decision boundary
+                    'model__C': [0.001, 0.01, 0.1, 1, 10, 100]
+                },
+                {
+                    'model__kernel': ['rbf'], # Radial Basis Function: creates a complex, flexible, curved boundary
+                    'model__C': [0.001, 0.01, 0.1, 1, 10, 100],
+                    'model__gamma': ['scale', 'auto'] # 'model__gamma': defines how much influence a single training example has
+                                                      # 'scale' ---> sets the gamma value based on both the number of features and the variance of the data
+                                                      # 'auto' ---> sets the gamma value based only on the number of features
+                }
+            ]
+            param_grids["Random Forest"] = {
+               'model__n_estimators': [100, 200, 300, 400, 500], # number of trees (400 has way higher precision, but very vewry low recall, while 200 the inverse)
+               #'model__n_estimators': [100, 200],
+               'model__max_depth': [10, 20, None], # maximum depth of each tree
+               'model__min_samples_split': [2, 5], # minimum number of samples to allow a further split of an internal node [i.e. requires at least 5 samples to split]
+               'model__min_samples_leaf': [1, 2] # minimum number of samples required to be at a leaf node at the end of the branch 
+            }
+            param_grids["XGBoost"] = {
+                'model__n_estimators': [100, 200], # Number of boosting rounds (number of trees)
+                'model__max_depth': [1, 2, 3, 4, 5, 7], # Max depth of each tree
+                'model__learning_rate': [0.01, 0.1], # Step size shrinkage ---> shrinks the contribution of each tree by this factor: smaller values make learning more gradual, often requiring more trees; larger values converge faster but can overshoot
+                'model__scale_pos_weight': [1, 5] # A few manual values for class imbalance
+            }
+            param_grids["LightGBM"] = [
+                {
+                    'model__learning_rate': [0.1],
+                    'model__n_estimators': [100, 200],
+                    'model__num_leaves': [31, 40],
+                    'model__max_depth': [-1, 10]
+                },
+                {
+                    'model__learning_rate': [0.01],
+                    'model__n_estimators': [200, 400, 600], # More trees for the lower learning rate
+                    'model__num_leaves': [31, 40],
+                    'model__max_depth': [-1, 10]
+                }
+            ]
+        
+        elif self.analysis_type == 'regression':
+            param_grids["Ridge Regression"] = {
+                'model__alpha': [0.01, 0.1, 1.0, 10.0, 100.0]  # controls the strength of the L2 regularization
+            }
+        return param_grids
+    
+    
+    
+    def _perform_grid_search(self, pipeline, param_grid, X_train, y_train, cv, groups):
+        """Performs GridSearchCV to find the best hyperparameters for a model."""
+        print("Performing grid search with cross-validation...")
+        
+        # Ttrack multiple metrics during the search
+        if self.analysis_type == 'classification':
+            scoring_metrics = ['roc_auc', 'recall', 'average_precision']
+            refit_metric = 'roc_auc' 
+        else: # Regression
+            # Note: Scikit-learn uses scores where higher is better.
+            # So we use 'neg_mean_absolute_error' and the grid search will try to make it closer to 0.
+            scoring_metrics = ['r2', 'neg_mean_absolute_error', 'neg_mean_squared_error']
+            refit_metric = 'r2'
+        
+        # Use roc_auc for scoring as it's a good metric for imbalanced classes
+        # Use 'refit' to choose the primary metric
+        grid_search = GridSearchCV(estimator=pipeline, param_grid=param_grid, cv=cv, 
+                                   scoring=scoring_metrics, refit=refit_metric,
+                                   n_jobs=-1, verbose=1) # n_jobs=-1 ---> use all available CPU cores for faster execution
+                                                         # verbose=1 ---> controls how much information is printed while the grid search runs; 1 means it will print basic progress information for each combination being tested
+        
+        # Fit the grid search to the data. It will automatically handle the CV withouth subject leakage.
+        grid_search.fit(X_train, y_train, groups=groups)
+        
+        print("\n--- Grid Search Results ---")
+        print(f"Best Parameters Found (optimized for {refit_metric.upper()}): {grid_search.best_params_}")
+        print(f"Best CV {refit_metric.upper()} Score: {grid_search.best_score_:.4f}")
+       
+        # Return all tuning results 
+        tuning_results_df = pd.DataFrame(grid_search.cv_results_)
+        
+        # Return the best model AND the detailed results dataframe
+        return grid_search.best_estimator_, tuning_results_df
 
-        # 6. Separate features (X) and target (y)
-        # We will define the actual features to use later. For now, we prepare the split.
-        # This step is currently a placeholder until we select the final features.
-        # For now, let's assume we drop non-feature columns.
-        non_feature_cols = [
-            self.target_column, 'subj_id', 'meal_time_start', 'meal_time_end', 
-            'postprandial_hypo_time', 'postprandial_deep_hypo_time', 'meal_category'
+    
+    
+    
+    def _evaluate_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba):
+        """Calculates and prints a comprehensive set of classification metrics."""
+        print(f"\n--- Evaluation Metrics for: {model_name} ---")
+
+        # Confusion Matrix and related metrics
+        cm = confusion_matrix(y_true, y_pred, labels=[0, 1]) # labels=[0, 1],to fixing the order: 0 is the negative class (No Hypo), 1 is the positive class (Hypo + Deep Hypo) 
+        print("Confusion Matrix:")
+        print(f"         Predicted 0   Predicted 1")
+        print(f"Actual 0 [[{cm[0][0]:^11d} {cm[0][1]:^11d}]] (No Hypo)") # : ^11d ---> d = format as an integer, ^11 = center it in a field of width 11 (to keep the table aligned)
+        print(f"Actual 1 [[{cm[1][0]:^11d} {cm[1][1]:^11d}]] (Hypo)")
+        print("-" * 40)
+        
+        tn, fp, fn, tp = cm.ravel() # .ravel() flattens the 2D matrix into a 1D array
+                                                                     
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+        sensitivity_recall = tp / (tp + fn) if (tp + fn) > 0 else 0 # Recall
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        f1_score = 2 * (precision * sensitivity_recall) / (precision + sensitivity_recall) if (precision + sensitivity_recall) > 0 else 0
+        
+        # Other key metrics
+        mcc = matthews_corrcoef(y_true, y_pred)
+        roc_auc = roc_auc_score(y_true, y_pred_proba)
+        pr_auc = average_precision_score(y_true, y_pred_proba)
+
+        # Print report
+        print(f"Accuracy:             {accuracy:.4f}")
+        print(f"Precision:            {precision:.4f}")
+        print(f"Sensitivity (Recall): {sensitivity_recall:.4f}")
+        print(f"Specificity:          {specificity:.4f}")
+        print(f"F1 Score:             {f1_score:.4f}")
+        print(f"MCC:                  {mcc:.4f}")
+        print(f"AUC-ROC:              {roc_auc:.4f}")
+        print(f"AUC-PR:               {pr_auc:.4f}")
+        print("-" * 40)
+        print("Classification Report:")
+        print(classification_report(y_true, y_pred, target_names=['No Hypo', 'Hypo'])) # Generates a text report of classification metrics for each class. It computes precision, recall, f1-score, and support
+        
+        # Create a dictionary of the results
+        metrics = {
+            'model': model_name,
+            'best_params': str(best_params), # Convert to string for CSV
+            'accuracy': accuracy_score(y_true, y_pred),
+            'precision': precision,
+            'recall': sensitivity_recall,
+            'specificity': specificity,
+            'f1_score': f1_score,
+            'mcc': matthews_corrcoef(y_true, y_pred),
+            'auc_roc': roc_auc_score(y_true, y_pred_proba),
+            'auc_pr': average_precision_score(y_true, y_pred_proba)
+        }
+        return metrics
+    
+    
+    
+    def _evaluate_regression(self, model_name: str, best_params, y_true, y_pred):
+        """Calculates and prints a comprehensive set of regression metrics."""
+        print(f"\n--- Final Evaluation on Test Set: {model_name} ---")
+        print(f"Best Parameters Found: {best_params}")
+        
+        mae = mean_absolute_error(y_true, y_pred)
+        mse = mean_squared_error(y_true, y_pred)
+        rmse = np.sqrt(mse)
+        r2 = r2_score(y_true, y_pred)
+
+        print(f"Mean Absolute Error (MAE):      {mae:.4f}")
+        print(f"Root Mean Squared Error (RMSE): {rmse:.4f}")
+        print(f"R-squared (R²):                 {r2:.4f}")
+
+        # Return metrics for logging
+        metrics = {
+            'model': model_name,
+            'best_params': str(best_params),
+            'mae': mae,
+            'rmse': rmse,
+            'r2': r2
+        }
+        return metrics
+    
+    
+    
+    def save_results_to_csv(self, filename="model_performance_log.csv"):
+        """Saves the collected experiment results to a CSV file."""
+        if not self.results_log:
+            print("No results to save.")
+            return
+        
+        results_df = pd.DataFrame(self.results_log)
+        
+        # Include all possible columns for both analysis types 
+        column_order = [
+            'feature_set', 'model', 
+            'auc_roc', 'recall', 'precision', 'specificity', 'f1_score', 'mcc', 'accuracy', 'auc_pr', 
+            'r2', 'mae', 'rmse', 
+            'best_params'
         ]
-        all_numeric_cols = self.df.select_dtypes(include=np.number).columns.tolist()
-        self.features_for_prediction = [
-            col for col in all_numeric_cols if col not in non_feature_cols
-        ]
+        # Use only the columns that actually exist in the current results DataFrame
+        results_df = results_df[[col for col in column_order if col in results_df.columns]]
         
-        self.X_train = train_df[self.features_for_prediction]
-        self.y_train = train_df[self.target_column]
-        
-        self.X_test = test_df[self.features_for_prediction]
-        self.y_test = test_df[self.target_column]
+        # Dynamically choose the column to sort by 
+        if self.analysis_type == 'classification':
+            sort_by_col = 'auc_roc'
+        else: # Regression
+            sort_by_col = 'r2'
 
-        print(f"Features (X) shape for training: {self.X_train.shape}")
-        print(f"Target (y) shape for training: {self.y_train.shape}")
-        print(f"Features (X) shape for testing: {self.X_test.shape}")
-        print(f"Target (y) shape for testing: {self.y_test.shape}")
+        # Sort the results
+        results_df = results_df.sort_values(by=['feature_set', sort_by_col], ascending=[True, False])
+ 
+        try:
+            # Save in the 'postprandial_db' folder
+            db_directory = os.path.dirname(self.data_file_path) #<-- FIX: Get the directory first
+            path = os.path.join(db_directory, filename) #<-- FIX: Build path from directory
+            results_df.to_csv(path, index=False)
+            print(f"\nSuccessfully saved model performance summary to: {path}")
+        except Exception as e:
+            print(f"\nError saving results to CSV: {e}")
 
-
-    # def _split_data_by_subject(self):
-    #     """
-    #     Splits the data into training and test sets ensuring that subjects
-    #     are unique to each set to prevent data leakage.
-    #     """
-    #     if self.df.empty or 'subj_id' not in self.df.columns:
-    #         print("Cannot split data. DataFrame is empty or 'subj_id' column is missing.")
-    #         return
-
-    #     # 1. Get a unique list of all subject IDs
-    #     all_subjects = self.df['subj_id'].unique()
-        
-    #     # 2. Split the list of subject IDs into training and testing lists
-    #     train_subjects, test_subjects = train_test_split(
-    #         all_subjects,
-    #         test_size=self.test_size,
-    #         random_state=self.random_state
-    #     )
-
-    #     # 3. Create the training and test DataFrames by filtering the original df
-    #     train_df = self.df[self.df['subj_id'].isin(train_subjects)].copy()
-    #     test_df = self.df[self.df['subj_id'].isin(test_subjects)].copy()
-
-    #     print("\n--- Data Split Summary ---")
-    #     print(f"Total subjects: {len(all_subjects)}")
-    #     print(f"Training subjects ({len(train_subjects)}): {sorted(list(train_subjects))}")
-    #     print(f"Test subjects ({len(test_subjects)}): {sorted(list(test_subjects))}")
-    #     print("-" * 25)
-    #     print(f"Total postprandial periods: {len(self.df)}")
-    #     print(f"Training periods: {len(train_df)} ({len(train_df) / len(self.df):.1%})")
-    #     print(f"Test periods: {len(test_df)} ({len(test_df) / len(self.df):.1%})")
-    #     print("-" * 25)
-
-    #     # 4. Separate features (X) from the target (y)
-    #     # We will define the actual features to use later. For now, we prepare the split.
-    #     # This step is currently a placeholder until we select the final features.
-    #     # For now, let's assume we drop non-feature columns.
-        
-    #     # Define columns that are not features for the model
-    #     non_feature_cols = [
-    #         self.target_column, 'subj_id', 'meal_time_start', 'meal_time_end', 
-    #         'postprandial_hypo_time', 'postprandial_deep_hypo_time', 'meal_category'
-    #     ]
-    #     # We will refine this list later
-        
-    #     # Get all numeric columns as a starting point, then drop the non-features
-    #     all_numeric_cols = self.df.select_dtypes(include=np.number).columns.tolist()
-    #     self.features_for_prediction = [
-    #         col for col in all_numeric_cols if col not in non_feature_cols
-    #     ]
-        
-    #     # Create X and y sets
-    #     self.X_train = train_df[self.features_for_prediction]
-    #     self.y_train = train_df[self.target_column]
-        
-    #     self.X_test = test_df[self.features_for_prediction]
-    #     self.y_test = test_df[self.target_column]
-
-    #     print(f"Features (X) shape for training: {self.X_train.shape}")
-    #     print(f"Target (y) shape for training: {self.y_train.shape}")
-    #     print(f"Features (X) shape for testing: {self.X_test.shape}")
-    #     print(f"Target (y) shape for testing: {self.y_test.shape}")
-
+      
 
     def train(self):
         """
         Main orchestration method for the training pipeline.
         """
-        if self.df.empty:
+        if self.df.empty or not self.feature_sets:
+            print("Cannot start training. Data or feature sets are missing.")
             return
 
         print("\n--- Starting Model Training Pipeline ---")
         
         # Step 1: Split the data
         self._split_data_by_subject()
-
-        # Future steps will be added here:
-        # Step 2: Preprocess the data (e.g., scaling, imputation, feature selection)
-        # Step 3: Train and evaluate models (e.g., using cross-validation)
-        # Step 4: Final evaluation on the held-out test set
         
-        print("\nData splitting is complete. Ready for model implementation.")
+        if self.train_df is None or self.test_df is None:
+            print("Data splitting failed. Aborting training.")
+            return
+        
+        models_to_train = self._get_models()
+        param_grids = self._get_parameter_grids()
+
+        # Step 2: Loop through each pre-selected feature set and train models
+        for feature_set_name, feature_list in self.feature_sets.items():
+            print(f"\n{'='*20} Feature Set: '{feature_set_name}' {'='*20}")
+
+            if not feature_list:
+                print("Feature list is empty, skipping.")
+                continue
+            
+            X_train_initial = self.train_df[feature_list]
+            X_test_initial = self.test_df[feature_list]
+            
+            if self.analysis_type == 'classification':
+                y_train_initial = self.train_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
+                y_test_initial = self.test_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
+            else: # Regression
+                y_train_initial = self.train_df[self.regression_target]
+                y_test_initial = self.test_df[self.regression_target]
+
+            # Drop rows where the target is NaN from ALL datasets (X, y, and groups)
+            train_full = pd.concat([X_train_initial, y_train_initial, self.train_df['subj_id']], axis=1).dropna(subset=[y_train_initial.name])
+            X_train = train_full[feature_list]
+            y_train = train_full[y_train_initial.name]
+            groups = train_full['subj_id'] # CORRECT groups are defined here
+
+            # Also filter the test set for consistency in evaluation
+            test_full = pd.concat([X_test_initial, y_test_initial], axis=1).dropna(subset=[y_test_initial.name])
+            X_test = test_full[feature_list]
+            y_test = test_full[y_test_initial.name]
+
+            # Block to automatically update the XGBoost grid
+            if self.analysis_type == 'classification' and "XGBoost" in param_grids:
+                imbalance_ratio = (y_train == 0).sum() / (y_train == 1).sum()
+                print(f"Calculated Imbalance Ratio (for XGBoost scale_pos_weight): {imbalance_ratio:.2f}")
+                # Add the ideal ratio to the list of values to test
+                param_grids["XGBoost"]['model__scale_pos_weight'].append(imbalance_ratio)
+                
+
+            for model_name, model in models_to_train.items():
+                print(f"\n>>> Training Model: {model_name}...")
+
+                # Create a pipeline to handle missing values, scale data, and train the model
+                # Use pipline so that one object handles everything
+                pipeline = Pipeline([ # Pipeline to chain multiple preprocessing steps and a model them into one unified workflow
+                    ('imputer', SimpleImputer(strategy='median')), # Fills missing value ---> SimpleImputer(strategy='median') replaces missing values in each feature column with the median of that column
+                    ('scaler', StandardScaler()),                  # Scales features
+                    ('model', model)                               # The actual model ---> training and prediction automatically include preprocessing
+                ])
+                
+                param_grid = param_grids.get(model_name)
+                if not param_grid:
+                    print(f"No parameter grid found for {model_name}. Skipping tuning.")
+                    continue
+
+                # TUNING AND TRAINING
+                cv = GroupKFold(n_splits=self.n_splits) # no subject used for the training are in the test set ---> no data leakage
+                
+                # 1. Tune the model to find the best hyperparameters
+                best_pipeline, tuning_results = self._perform_grid_search(pipeline, param_grid, X_train, y_train, cv, groups)
+                
+                # Save the detailed tuning results for this model
+                tuning_filename = f"tuning_results_{model_name.replace(' ', '')}_{feature_set_name}.csv"
+                try:
+                    db_directory = os.path.dirname(self.data_file_path) 
+                    path = os.path.join(db_directory, 'tuning_logs', tuning_filename) 
+                    os.makedirs(os.path.dirname(path), exist_ok=True)
+                    tuning_results.to_csv(path, index=False)
+                    print(f"Saved detailed tuning results to: {path}")
+                except Exception as e:
+                    print(f"Error saving tuning results: {e}")
+                
+                # 2. Use the best found model for final evaluation on the test set
+                y_pred = best_pipeline.predict(X_test)
+                
+                # Call the correct evaluation function 
+                if self.analysis_type == 'classification':
+                    y_pred_proba = best_pipeline.predict_proba(X_test)[:, 1]
+                    results = self._evaluate_classification(model_name, best_pipeline.get_params()['model'], y_test, y_pred, y_pred_proba)
+                else: # Regression
+                    results = self._evaluate_regression(model_name, best_pipeline.get_params()['model'], y_test, y_pred)
+                     
+                # 3. Log the results of the tested models
+                results['feature_set'] = feature_set_name # Add feature set info
+                self.results_log.append(results)
+
+        print("\nModel training pipeline finished.")
 
 
 
@@ -235,11 +527,16 @@ class ModelTrainer:
 
 
 
-# Example of how to run this class (for testing)
+
 if __name__ == '__main__':
+    # Get the analysis_mode from the main script's configuration
+    analysis_mode = 'classification' 
+    features_filename = f"{analysis_mode}_selected_feature_sets.json"
+
     trainer = ModelTrainer(
         data_file_path='postprandial_db/all_postprandial_data_with_features.csv',
-        analysis_type='classification',
+        features_file_path=f'postprandial_db/{features_filename}',
+        analysis_type=analysis_mode,
         classification_target='target_hypoglycemia',
         regression_target='postprandial_glucose_min'
     )

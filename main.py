@@ -14,6 +14,7 @@ from src.data_visualization.data_visualizer import DataVisualizer
 from src.data_analysis.feature_analyzer import FeatureAnalyzer
 from src.training.model_trainer import ModelTrainer
 import pandas as pd
+import json
 
 plt.close('all')
 
@@ -89,8 +90,10 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     }
     
     # --- Parametri Specifici per ModelTrainer ---
+    features_filename = f"{ANALYSIS_MODE}_selected_feature_sets.json"
     TRAINER_PARAMS = {
         "data_file_path": os.path.join(COMMON_PARAMS["data_dir_db"], EXTRACTOR_PARAMS["output_filename_with_features"]),
+        "features_file_path": os.path.join(COMMON_PARAMS["data_dir_db"], features_filename),
         "analysis_type": ANALYSIS_MODE,
         "classification_target": 'target_hypoglycemia',
         "regression_target": 'postprandial_glucose_min',
@@ -472,6 +475,22 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                 min_effect_sizes=effect_size_thresholds
             )
             print_summary_tables(feature_sets_with_filter, "SELECTED FEATURES (WITH EFFECT SIZE FILTER)")
+            
+            
+            # Convert the DataFrames to a dictionary of lists and save to JSON 
+            feature_lists_to_save = {
+                name: df['Feature'].tolist() for name, df in feature_sets_with_filter.items()
+            }
+            
+            features_filename = f"{ANALYSIS_MODE}_selected_feature_sets.json"
+            output_path = os.path.join(COMMON_PARAMS["data_dir_db"], features_filename)
+            try:
+                with open(output_path, 'w') as f:
+                    json.dump(feature_lists_to_save, f, indent=4)
+                print(f"\nSuccessfully saved selected feature lists to: {output_path}")
+            except Exception as e:
+                print(f"\nError saving feature lists to JSON: {e}")
+
 
             # 2. Print the Version WITHOUT the effect size filter 
             print("\n>>> Generating feature sets WITHOUT minimum effect size filter...")
@@ -497,9 +516,13 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     if run_model_training:
         print("\n--- Fase 5: Training dei Modelli di Machine Learning ---")
         trainer = ModelTrainer(**TRAINER_PARAMS)
-        # The train method will handle splitting and eventually the model training
+
+        
+        # The train method will handle splitting and the model training
         trainer.train()
         
+        log_filename = f"{ANALYSIS_MODE}_performance_log.csv"
+        trainer.save_results_to_csv(log_filename)
         
         
         
@@ -511,7 +534,7 @@ if __name__ == "__main__":
         visualize_preparation_steps = False, # Imposta a True per vedere i plot durante la preparazione (può essere molto verboso)
         run_feature_extraction = False, # Esegui l'estrazione delle feature
         run_visualization = False, # Avvia il visualizzatore interattivo
-        run_data_analysis = True, 
-        run_model_training = False,
+        run_data_analysis = False, 
+        run_model_training = True,
         RELOAD_STATS_FROM_CSV = True # Set to True to load, False to recalculate the effect size and CIs
     )
