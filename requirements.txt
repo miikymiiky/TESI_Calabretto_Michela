@@ -6,3 +6,5 @@ seaborn
 pingouin>=0.5.2
 scikit-posthocs
 scikit-learn
+xgboost
+lightgbm

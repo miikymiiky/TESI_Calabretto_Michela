@@ -19,11 +19,11 @@ from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
 
 # Models
-from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.svm import SVC
-from sklearn.ensemble import RandomForestClassifier
-from xgboost import XGBClassifier
-from lightgbm import LGBMClassifier
+from sklearn.linear_model import LogisticRegression, Ridge, Lasso
+from sklearn.svm import SVC, SVR
+from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
+from xgboost import XGBClassifier, XGBRegressor
+from lightgbm import LGBMClassifier, LGBMRegressor
 
 # Evaluation Metrics
 from sklearn.metrics import (accuracy_score, confusion_matrix, classification_report, 
@@ -35,6 +35,7 @@ from sklearn.model_selection import GroupKFold, cross_validate, GridSearchCV
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="X does not have valid feature names, but LGBMClassifier was fitted with feature names")
+warnings.filterwarnings("ignore", category=UserWarning, message="X does not have valid feature names, but LGBMRegressor was fitted with feature names")
 
 
 
@@ -183,6 +184,11 @@ class ModelTrainer:
         
         elif self.analysis_type == 'regression':
             models["Ridge Regression"] = Ridge(random_state=self.random_state)
+            models["Lasso Regression"] = Lasso(random_state=self.random_state, max_iter=5000)
+            models["Support Vector Regressor"] = SVR()
+            models["Random Forest Regressor"] = RandomForestRegressor(random_state=self.random_state, n_jobs=-1)
+            models["XGBoost Regressor"] = XGBRegressor(random_state=self.random_state, n_jobs=-1)
+            models["LightGBM Regressor"] = LGBMRegressor(random_state=self.random_state, n_jobs=-1, verbose=-1)
             
             # ADD NEW REGRESSION MODELS HERE
     
@@ -252,7 +258,37 @@ class ModelTrainer:
         
         elif self.analysis_type == 'regression':
             param_grids["Ridge Regression"] = {
-                'model__alpha': [0.01, 0.1, 1.0, 10.0, 100.0]  # controls the strength of the L2 regularization
+                'model__alpha': [0.01, 0.1, 1.0, 10.0, 100.0, 200.0, 500.0]  # controls the strength of the L2 regularization
+            }
+            param_grids["Lasso Regression"] = {
+                'model__alpha': [0.01, 0.1, 1.0, 10.0, 100.0] # L1 regularization strength
+            }
+            param_grids["Support Vector Regressor"] = [
+                {
+                    'model__kernel': ['linear'],
+                    'model__C': [0.01, 0.1, 1, 10, 100]
+                },
+                {
+                    'model__kernel': ['rbf'],
+                    'model__C': [0.01, 0.1, 1, 10, 100],
+                    'model__gamma': ['scale', 'auto']
+                }
+            ]
+            param_grids["Random Forest Regressor"] = {
+               'model__n_estimators': [100, 200, 300, 400, 500],
+               'model__max_depth': [10, 20, None],
+               'model__min_samples_split': [2, 5],
+               'model__min_samples_leaf': [1, 2]
+            }
+            param_grids["XGBoost Regressor"] = {
+                'model__n_estimators': [100, 200, 300, 400, 500],
+                'model__max_depth': [3, 5, 7],
+                'model__learning_rate': [0.01, 0.1]
+            }
+            param_grids["LightGBM Regressor"] = {
+                'model__learning_rate': [0.01, 0.1],
+                'model__n_estimators': [100, 200, 300, 400, 500, 600],
+                'model__num_leaves': [20, 31, 40],
             }
         return param_grids
     

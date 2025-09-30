@@ -80,7 +80,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     
     # --- Parametri Specifici per DataVisualizer ---
     # Switch to easily change between analysis modes
-    ANALYSIS_MODE = 'classification'  # Options: 'classification' or 'regression'
+    ANALYSIS_MODE = 'regression'  # Options: 'classification' or 'regression'
 
     ANALIZER_PARAMS = {
         "data_file_path":os.path.join(COMMON_PARAMS["data_dir_db"],EXTRACTOR_PARAMS["output_filename_with_features"]), 
