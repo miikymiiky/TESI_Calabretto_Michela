@@ -1,0 +1,55 @@
+feature_set,model,r2,mae,rmse,best_params
+Mixed,LightGBM Regressor,0.37047073861243707,11.660729499036051,15.567232331545664,"LGBMRegressor(learning_rate=0.01, n_estimators=600, n_jobs=-1, num_leaves=20,
+              random_state=42, verbose=-1)"
+Mixed,XGBoost Regressor,0.36498832491588507,11.674704363574156,15.634870965217525,"XGBRegressor(base_score=None, booster=None, callbacks=None,
+             colsample_bylevel=None, colsample_bynode=None,
+             colsample_bytree=None, device=None, early_stopping_rounds=None,
+             enable_categorical=False, eval_metric=None, feature_types=None,
+             feature_weights=None, gamma=None, grow_policy=None,
+             importance_type=None, interaction_constraints=None,
+             learning_rate=0.01, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=5,
+             max_leaves=None, min_child_weight=None, missing=nan,
+             monotone_constraints=None, multi_strategy=None, n_estimators=500,
+             n_jobs=-1, num_parallel_tree=None, ...)"
+Mixed,Random Forest Regressor,0.3452156275069366,11.79632654700679,15.87642072333862,"RandomForestRegressor(min_samples_leaf=2, n_estimators=500, n_jobs=-1,
+                      random_state=42)"
+Mixed,Ridge Regression,0.3187294206940209,12.269951433748245,16.194340387928197,"Ridge(alpha=200.0, random_state=42)"
+Mixed,Support Vector Regressor,0.31849854750698026,12.273245134594218,16.19708417460003,"SVR(C=0.1, kernel='linear')"
+Mixed,Lasso Regression,0.31346225545476636,12.34974836092599,16.256822194114562,"Lasso(alpha=0.1, max_iter=5000, random_state=42)"
+Post-Meal Predictive,LightGBM Regressor,0.2507297791220443,12.746914707441025,16.983323509924126,"LGBMRegressor(learning_rate=0.01, n_estimators=600, n_jobs=-1, num_leaves=20,
+              random_state=42, verbose=-1)"
+Post-Meal Predictive,Random Forest Regressor,0.24533941483416788,12.821081702061326,17.044304340394124,"RandomForestRegressor(max_depth=10, min_samples_split=5, n_jobs=-1,
+                      random_state=42)"
+Post-Meal Predictive,XGBoost Regressor,0.24505559205830751,12.869182194092499,17.04750916326912,"XGBRegressor(base_score=None, booster=None, callbacks=None,
+             colsample_bylevel=None, colsample_bynode=None,
+             colsample_bytree=None, device=None, early_stopping_rounds=None,
+             enable_categorical=False, eval_metric=None, feature_types=None,
+             feature_weights=None, gamma=None, grow_policy=None,
+             importance_type=None, interaction_constraints=None,
+             learning_rate=0.01, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=3,
+             max_leaves=None, min_child_weight=None, missing=nan,
+             monotone_constraints=None, multi_strategy=None, n_estimators=500,
+             n_jobs=-1, num_parallel_tree=None, ...)"
+Post-Meal Predictive,Support Vector Regressor,0.24404825847663925,12.769631450689973,17.05887874473215,SVR(C=10)
+Post-Meal Predictive,Ridge Regression,0.1585466809477245,13.761836893342235,17.997760165215983,"Ridge(alpha=10.0, random_state=42)"
+Post-Meal Predictive,Lasso Regression,0.15854470584149483,13.762042392053225,17.997781287877547,"Lasso(alpha=0.01, max_iter=5000, random_state=42)"
+Pre-Meal,Support Vector Regressor,0.2729798327749545,12.696139592527754,16.72925786252351,"SVR(C=0.1, kernel='linear')"
+Pre-Meal,Ridge Regression,0.2720519127937414,12.721962802191863,16.73993051181016,"Ridge(alpha=200.0, random_state=42)"
+Pre-Meal,Lasso Regression,0.2687135085305308,12.78112908003004,16.778271658968144,"Lasso(alpha=0.1, max_iter=5000, random_state=42)"
+Pre-Meal,XGBoost Regressor,0.26454023803730964,12.792866334366101,16.82607826678799,"XGBRegressor(base_score=None, booster=None, callbacks=None,
+             colsample_bylevel=None, colsample_bynode=None,
+             colsample_bytree=None, device=None, early_stopping_rounds=None,
+             enable_categorical=False, eval_metric=None, feature_types=None,
+             feature_weights=None, gamma=None, grow_policy=None,
+             importance_type=None, interaction_constraints=None,
+             learning_rate=0.1, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=3,
+             max_leaves=None, min_child_weight=None, missing=nan,
+             monotone_constraints=None, multi_strategy=None, n_estimators=100,
+             n_jobs=-1, num_parallel_tree=None, ...)"
+Pre-Meal,LightGBM Regressor,0.26389783040916315,12.829293172944073,16.83342526401399,"LGBMRegressor(learning_rate=0.01, n_estimators=400, n_jobs=-1, num_leaves=20,
+              random_state=42, verbose=-1)"
+Pre-Meal,Random Forest Regressor,0.2563144132191427,12.878034303736017,16.919913115383824,"RandomForestRegressor(max_depth=10, min_samples_leaf=2, min_samples_split=5,
+                      n_estimators=200, n_jobs=-1, random_state=42)"
