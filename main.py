@@ -13,6 +13,8 @@ from src.feature_extraction.postprandial_feature_extractor import PostprandialFe
 from src.data_visualization.data_visualizer import DataVisualizer
 from src.data_analysis.feature_analyzer import FeatureAnalyzer
 from src.training.model_trainer import ModelTrainer
+from src.training.hybrid_model_trainer import HybridModelTrainer
+from src.training.two_step_model_trainer import TwoStepModelTrainer
 import pandas as pd
 import json
 
@@ -80,7 +82,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     
     # --- Parametri Specifici per DataVisualizer ---
     # Switch to easily change between analysis modes
-    ANALYSIS_MODE = 'regression'  # Options: 'classification' or 'regression'
+    ANALYSIS_MODE = 'two_step'  # Options: 'classification' or 'regression' or 'hybrid' or 'two_step' ('hybrid' and 'two_step' are only for the run_model_training_pipeline)
 
     ANALIZER_PARAMS = {
         "data_file_path":os.path.join(COMMON_PARAMS["data_dir_db"],EXTRACTOR_PARAMS["output_filename_with_features"]), 
@@ -90,15 +92,24 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     }
     
     # --- Parametri Specifici per ModelTrainer ---
-    features_filename = f"{ANALYSIS_MODE}_selected_feature_sets.json"
+    # Switch for classification type
+    CLASSIFICATION_TYPE = 'binary' # Options: 'binary' or 'multi_class'
+
+    if ANALYSIS_MODE == 'regression':
+        trainer_analysis_type = 'regression'
+        features_filename = "regression_selected_feature_sets.json"
+    else: # Covers 'classification', 'hybrid', and 'two_step' which all start with classification
+        trainer_analysis_type = f'{CLASSIFICATION_TYPE}_classification'
+        features_filename = "classification_selected_feature_sets.json"
+
     TRAINER_PARAMS = {
         "data_file_path": os.path.join(COMMON_PARAMS["data_dir_db"], EXTRACTOR_PARAMS["output_filename_with_features"]),
         "features_file_path": os.path.join(COMMON_PARAMS["data_dir_db"], features_filename),
-        "analysis_type": ANALYSIS_MODE,
+        "analysis_type": trainer_analysis_type, 
         "classification_target": 'target_hypoglycemia',
         "regression_target": 'postprandial_glucose_min',
-        "test_size": 0.20, # 20% for the test set
-        "random_state": 42 # For reproducible results
+        "test_size": 0.20,
+        "random_state": 42
     }
 
 
@@ -514,15 +525,42 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     
     
     if run_model_training:
-        print("\n--- Fase 5: Training dei Modelli di Machine Learning ---")
-        trainer = ModelTrainer(**TRAINER_PARAMS)
+        if ANALYSIS_MODE == 'hybrid':
+            print(f"\n--- Fase 5: Training Modelli Ibridi (Classificazione + Regressione) ---")
+            
+            # Instantiate and run the pipeline. No need to define models here.
+            hybrid_trainer = HybridModelTrainer(
+                data_file_path=os.path.join(COMMON_PARAMS["data_dir_db"], EXTRACTOR_PARAMS["output_filename_with_features"]),
+                features_file_path=os.path.join(COMMON_PARAMS["data_dir_db"], features_filename),
+                classification_target='target_hypoglycemia',
+                regression_target='postprandial_glucose_min',
+                random_state=42
+            )
+            hybrid_trainer.run_pipeline()
+            hybrid_trainer.save_results_to_csv("tuned_hybrid_performance_log.csv")
+        
+        elif ANALYSIS_MODE == 'two_step':
+            print(f"\n--- Fase 5: Training Modelli a Due Fasi (Multi-Class) ---")
 
-        
-        # The train method will handle splitting and the model training
-        trainer.train()
-        
-        log_filename = f"{ANALYSIS_MODE}_performance_log.csv"
-        trainer.save_results_to_csv(log_filename)
+            # Use the classification features file
+            features_filename = "classification_selected_feature_sets.json" 
+
+            two_step_trainer = TwoStepModelTrainer(
+                data_file_path=os.path.join(COMMON_PARAMS["data_dir_db"], EXTRACTOR_PARAMS["output_filename_with_features"]),
+                features_file_path=os.path.join(COMMON_PARAMS["data_dir_db"], features_filename),
+                classification_target='target_hypoglycemia',
+                random_state=42
+            )
+            two_step_trainer.run()
+            two_step_trainer.save_results_to_csv("tuned_two_step_performance_log.csv")
+
+
+        else:
+            print(f"\n--- Fase 5: Training dei Modelli ({trainer_analysis_type}) ---")
+            trainer = ModelTrainer(**TRAINER_PARAMS)
+            trainer.train()
+            log_filename = f"{trainer_analysis_type}_performance_log.csv"
+            trainer.save_results_to_csv(log_filename)
         
         
         

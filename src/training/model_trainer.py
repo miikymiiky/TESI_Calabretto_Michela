@@ -28,7 +28,8 @@ from lightgbm import LGBMClassifier, LGBMRegressor
 # Evaluation Metrics
 from sklearn.metrics import (accuracy_score, confusion_matrix, classification_report, 
                              roc_auc_score, average_precision_score, matthews_corrcoef,
-                             mean_absolute_error, mean_squared_error, r2_score)
+                             mean_absolute_error, mean_squared_error, r2_score,
+                             precision_score, recall_score, f1_score)
 
 # Imports for Cross-Validation 
 from sklearn.model_selection import GroupKFold, cross_validate, GridSearchCV
@@ -70,12 +71,13 @@ class ModelTrainer:
         self.classification_target = classification_target
         self.regression_target = regression_target
 
-        if self.analysis_type == 'classification':
+        if 'classification' in self.analysis_type:
             self.target_column = classification_target
         elif self.analysis_type == 'regression':
             self.target_column = regression_target
         else:
-            raise ValueError("analysis_type must be 'classification' or 'regression'")
+            raise ValueError("analysis_type must contain 'classification' or be 'regression'")
+
 
         self.df = self._load_data()
         self.feature_sets = self._load_feature_sets()
@@ -172,14 +174,19 @@ class ModelTrainer:
     def _get_models(self) -> dict:
         """Defines the models to be trained based on the analysis type."""
         models = {}
-        if self.analysis_type == 'classification':
-            models["Logistic Regression"] = LogisticRegression(random_state=self.random_state, max_iter=5000, class_weight='balanced') # class_weight='balanced' ---> adjusts weights inversely proportional to class frequencies to avoid biased toward the majority 
+        if 'classification' in self.analysis_type:
+            # Common models for both classification types
+            models["Logistic Regression"] = LogisticRegression(random_state=self.random_state, max_iter=10000, class_weight='balanced') # class_weight='balanced' ---> adjusts weights inversely proportional to class frequencies to avoid biased toward the majority 
             models["Support Vector Machine"] = SVC(random_state=self.random_state, class_weight='balanced', probability=True) # probability=True to also add output probabilities
             models["Random Forest"] = RandomForestClassifier(random_state=self.random_state, class_weight='balanced_subsample', n_jobs=-1) # class_weight='balanced_subsample' ---> for unbalanced datasets: creates balanced class weights for each individual tree based on its bootstrap sample
-            models["XGBoost"] = XGBClassifier(random_state=self.random_state, eval_metric='logloss', n_jobs=-1) # eval_metric='logloss' ---> logarithmic loss (evaluation metric used for the training)
-                                                                                                                                         # use_label_encoder=False ---> disables the automatic internal encoder
             models["LightGBM"] = LGBMClassifier(random_state=self.random_state, class_weight='balanced',n_jobs=-1, verbose=-1) # verbose=-1 ---> to silence the prints in the console
             
+            # Specific model parameters
+            if self.analysis_type == 'binary_classification':
+                models["XGBoost"] = XGBClassifier(random_state=self.random_state, eval_metric='logloss', n_jobs=-1) # eval_metric='logloss' ---> logarithmic loss (evaluation metric used for the training)
+            elif self.analysis_type == 'multi_class_classification':
+                models["XGBoost"] = XGBClassifier(random_state=self.random_state, eval_metric='mlogloss', n_jobs=-1)
+                
             # ADD NEW CLASSIFICATION MODELS HERE
         
         elif self.analysis_type == 'regression':
@@ -200,21 +207,8 @@ class ModelTrainer:
     def _get_parameter_grids(self) -> dict:
         """Defines the hyperparameter grids for each model."""
         param_grids = {}
-        if self.analysis_type == 'classification':
-            # The model type is essential for tuning within a pipeline.
-            param_grids["Logistic Regression"] = [
-                {
-                    'model__penalty': ['l1'], # Lasso regularization
-                    'model__solver': ['liblinear', 'saga'], # model__solver: algorithm used to optimize the logistic regression
-                                                            # 'liblinear' ---> good for small datasets; 'saga' ---> scales better to large datasets
-                    'model__C': [0.01, 0.1, 1, 10, 100] # model__C: Inverse of regularization strength. Smaller C means stronger regularization
-                },
-                {
-                    'model__penalty': ['l2'], # Ridge regularization
-                    'model__solver': ['lbfgs', 'liblinear', 'saga'], # 'lbfgs' ---> works well for small to medium datasets, but can also handle larger datasets efficiently
-                    'model__C': [0.01, 0.1, 1, 10, 100]
-                }
-            ]
+        if 'classification' in self.analysis_type:
+            # Common grids for both classification types
             param_grids["Support Vector Machine"] = [
                 {
                     'model__kernel': ['linear'], # uses a simple straigth line as a decision boundary
@@ -229,17 +223,10 @@ class ModelTrainer:
                 }
             ]
             param_grids["Random Forest"] = {
-               'model__n_estimators': [100, 200, 300, 400, 500], # number of trees (400 has way higher precision, but very vewry low recall, while 200 the inverse)
-               #'model__n_estimators': [100, 200],
-               'model__max_depth': [10, 20, None], # maximum depth of each tree
-               'model__min_samples_split': [2, 5], # minimum number of samples to allow a further split of an internal node [i.e. requires at least 5 samples to split]
-               'model__min_samples_leaf': [1, 2] # minimum number of samples required to be at a leaf node at the end of the branch 
-            }
-            param_grids["XGBoost"] = {
-                'model__n_estimators': [100, 200], # Number of boosting rounds (number of trees)
-                'model__max_depth': [1, 2, 3, 4, 5, 7], # Max depth of each tree
-                'model__learning_rate': [0.01, 0.1], # Step size shrinkage ---> shrinks the contribution of each tree by this factor: smaller values make learning more gradual, often requiring more trees; larger values converge faster but can overshoot
-                'model__scale_pos_weight': [1, 5] # A few manual values for class imbalance
+               'model__n_estimators': [100, 200, 300, 400, 500, 600, 700], # number of trees (400 has way higher precision, but very vewry low recall, while 200 the inverse)
+               'model__max_depth': [10, 20, 30, None], # maximum depth of each tree
+               'model__min_samples_split': [2, 5, 10], # minimum number of samples to allow a further split of an internal node [i.e. requires at least 5 samples to split]
+               'model__min_samples_leaf': [1, 2, 4] # minimum number of samples required to be at a leaf node at the end of the branch 
             }
             param_grids["LightGBM"] = [
                 {
@@ -255,6 +242,51 @@ class ModelTrainer:
                     'model__max_depth': [-1, 10]
                 }
             ]
+            
+            # XGBoost grid depends on the classification type
+            if self.analysis_type == 'binary_classification':
+                param_grids["Logistic Regression"] = [
+                    {
+                        'model__penalty': ['l1'], # Lasso regularization
+                        'model__solver': ['liblinear', 'saga'], # model__solver: algorithm used to optimize the logistic regression
+                                                                # 'liblinear' ---> good for small datasets; 'saga' ---> scales better to large datasets
+                        'model__C': [0.01, 0.1, 1, 10, 100] # model__C: Inverse of regularization strength. Smaller C means stronger regularization
+                    },
+                    {
+                        'model__penalty': ['l2'], # Ridge regularization
+                        'model__solver': ['lbfgs', 'liblinear', 'saga'], # 'lbfgs' ---> works well for small to medium datasets, but can also handle larger datasets efficiently
+                        'model__C': [0.01, 0.1, 1, 10, 100]
+                    }
+                ]
+                param_grids["XGBoost"] = {
+                    'model__n_estimators': [100, 200], # Number of boosting rounds (number of trees)
+                    'model__max_depth': [1, 2, 3, 4, 5, 7], # Max depth of each tree
+                    'model__learning_rate': [0.01, 0.1], # Step size shrinkage ---> shrinks the contribution of each tree by this factor: smaller values make learning more gradual, often requiring more trees; larger values converge faster but can overshoot
+                    'model__scale_pos_weight': [1, 5] # A few manual values for class imbalance
+                }
+            elif self.analysis_type == 'multi_class_classification':
+                print("Using parameter grid without 'liblinear' for Multi-Class Logistic Regression.")
+                param_grids["Logistic Regression"] = [
+                    {
+                        'model__penalty': ['l1'],
+                        'model__solver': ['saga'],
+                        'model__C': [0.1, 1, 10, 100],
+                        'model__max_iter': [10000, 25000]
+                    },
+                    {
+                        'model__penalty': ['l2'],
+                        'model__solver': ['lbfgs', 'saga'],
+                        'model__C': [0.1, 1, 10, 100]
+                    }
+                ]
+                param_grids["XGBoost"] = {
+                    'model__n_estimators': [100, 200, 300, 400],
+                    'model__max_depth': [1, 2, 3, 4, 5, 6, 7],
+                    'model__learning_rate': [0.01, 0.1],
+                    # No scale_pos_weight for multi-class
+                    'model__subsample': [0.7, 1.0], # Fraction of training data to use per tree
+                    'model__colsample_bytree': [0.7, 1.0] # Fraction of features to use per tree
+                }
         
         elif self.analysis_type == 'regression':
             param_grids["Ridge Regression"] = {
@@ -299,9 +331,12 @@ class ModelTrainer:
         print("Performing grid search with cross-validation...")
         
         # Ttrack multiple metrics during the search
-        if self.analysis_type == 'classification':
+        if self.analysis_type == 'binary_classification':
             scoring_metrics = ['roc_auc', 'recall', 'average_precision']
-            refit_metric = 'roc_auc' 
+            refit_metric = 'roc_auc'
+        elif self.analysis_type == 'multi_class_classification':
+            scoring_metrics = ['roc_auc_ovr_weighted', 'recall_weighted', 'f1_weighted'] # roc_auc_ovr_weighted ---> 'ovr' = One Versus Rest(each class is compared against all the others); 'weighted' = scores are weighted by how many samples are in each class
+            refit_metric = 'roc_auc_ovr_weighted'
         else: # Regression
             # Note: Scikit-learn uses scores where higher is better.
             # So we use 'neg_mean_absolute_error' and the grid search will try to make it closer to 0.
@@ -327,13 +362,23 @@ class ModelTrainer:
         
         # Return the best model AND the detailed results dataframe
         return grid_search.best_estimator_, tuning_results_df
-
     
     
     
     def _evaluate_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba):
+        """Dispatcher function that calls the appropriate evaluation method."""
+        if self.analysis_type == 'binary_classification':
+            # For binary, we need the probability of the positive class (class 1)
+            return self._evaluate_binary_classification(model_name, best_params, y_true, y_pred, y_pred_proba[:, 1])
+        elif self.analysis_type == 'multi_class_classification':
+            # For multi-class, we need the full probability matrix
+            return self._evaluate_multi_class_classification(model_name, best_params, y_true, y_pred, y_pred_proba)
+
+    
+    
+    def _evaluate_binary_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba):
         """Calculates and prints a comprehensive set of classification metrics."""
-        print(f"\n--- Evaluation Metrics for: {model_name} ---")
+        print(f"\n--- Evaluation Metrics for: {model_name} (Binary) ---")
 
         # Confusion Matrix and related metrics
         cm = confusion_matrix(y_true, y_pred, labels=[0, 1]) # labels=[0, 1],to fixing the order: 0 is the negative class (No Hypo), 1 is the positive class (Hypo + Deep Hypo) 
@@ -386,6 +431,60 @@ class ModelTrainer:
     
     
     
+    def _evaluate_multi_class_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba):
+        """Calculates and prints multi-class classification metrics."""
+        print(f"\n--- Evaluation Metrics for: {model_name} (Multi-Class) ---")
+        class_labels = ['No Hypo', 'Hypo', 'Deep Hypo']
+        target_indices = [0, 1, 2]
+
+        cm = confusion_matrix(y_true, y_pred, labels=target_indices)
+        print("Confusion Matrix:")
+        print(f"                   Pred_No_Hypo   Pred_Hypo   Pred_Deep_Hypo")
+        for i, label in enumerate(class_labels):
+            print(f"Actual_{label:<10}  {cm[i]}")
+        print("-" * 60)
+        
+        accuracy = accuracy_score(y_true, y_pred)
+        precision = precision_score(y_true, y_pred, average='weighted', zero_division=0) # zero_division=0 ---> for when class has no predicted samples (denominator is 0); this way, instead of crashing, sklearn will return 0
+        recall = recall_score(y_true, y_pred, average='weighted', zero_division=0)
+        f1 = f1_score(y_true, y_pred, average='weighted', zero_division=0)
+        mcc = matthews_corrcoef(y_true, y_pred)
+        
+        specificities = {}
+        for i in target_indices:
+            tp = cm[i, i]
+            fp = cm[:, i].sum() - tp
+            fn = cm[i, :].sum() - tp
+            tn = cm.sum() - (tp + fp + fn)
+            specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+            specificities[class_labels[i]] = specificity
+
+        roc_auc = roc_auc_score(y_true, y_pred_proba, multi_class='ovr', average='weighted')
+
+        print(f"Accuracy (Overall):        {accuracy:.4f}")
+        print(f"Precision (Weighted):      {precision:.4f}")
+        print(f"Recall (Weighted):         {recall:.4f}")
+        print(f"F1 Score (Weighted):       {f1:.4f}")
+        print(f"MCC (Matthews Corr Coef):  {mcc:.4f}")
+        print(f"AUC-ROC (OvR, Weighted):   {roc_auc:.4f}")
+        print("\nSpecificity (per class):")
+        for label, spec in specificities.items():
+            print(f"  - {label}: {spec:.4f}")
+        print("-" * 60)
+        
+        print("Classification Report:")
+        print(classification_report(y_true, y_pred, target_names=class_labels, zero_division=0))
+        
+        metrics = {
+            'model': model_name, 'best_params': str(best_params), 'accuracy': accuracy,
+            'precision_weighted': precision, 'recall_weighted': recall, 'f1_weighted': f1, 'mcc': mcc,
+            'roc_auc_ovr_weighted': roc_auc, 'specificity_no_hypo': specificities.get('No Hypo', 0),
+            'specificity_hypo': specificities.get('Hypo', 0), 'specificity_deep_hypo': specificities.get('Deep Hypo', 0)
+        }
+        return metrics
+    
+    
+    
     def _evaluate_regression(self, model_name: str, best_params, y_true, y_pred):
         """Calculates and prints a comprehensive set of regression metrics."""
         print(f"\n--- Final Evaluation on Test Set: {model_name} ---")
@@ -420,29 +519,32 @@ class ModelTrainer:
         
         results_df = pd.DataFrame(self.results_log)
         
-        # Include all possible columns for both analysis types 
-        column_order = [
-            'feature_set', 'model', 
-            'auc_roc', 'recall', 'precision', 'specificity', 'f1_score', 'mcc', 'accuracy', 'auc_pr', 
-            'r2', 'mae', 'rmse', 
-            'best_params'
-        ]
-        # Use only the columns that actually exist in the current results DataFrame
-        results_df = results_df[[col for col in column_order if col in results_df.columns]]
-        
-        # Dynamically choose the column to sort by 
-        if self.analysis_type == 'classification':
+        if self.analysis_type == 'binary_classification':
+            column_order = [
+                'feature_set', 'model', 'auc_roc', 'recall', 'precision', 'specificity', 
+                'f1_score', 'mcc', 'accuracy', 'auc_pr', 'best_params'
+            ]
             sort_by_col = 'auc_roc'
+        elif self.analysis_type == 'multi_class_classification':
+            column_order = [
+                'feature_set', 'model', 'roc_auc_ovr_weighted', 'recall_weighted', 'precision_weighted', 
+                'f1_weighted', 'mcc', 'accuracy', 'specificity_no_hypo', 'specificity_hypo', 
+                'specificity_deep_hypo', 'best_params'
+            ]
+            sort_by_col = 'roc_auc_ovr_weighted'
         else: # Regression
+            column_order = ['feature_set', 'model', 'r2', 'mae', 'rmse', 'best_params']
             sort_by_col = 'r2'
 
+        # Use only the columns that actually exist in the current results DataFrame
+        results_df = results_df[[col for col in column_order if col in results_df.columns]]
         # Sort the results
         results_df = results_df.sort_values(by=['feature_set', sort_by_col], ascending=[True, False])
- 
+
         try:
             # Save in the 'postprandial_db' folder
-            db_directory = os.path.dirname(self.data_file_path) #<-- FIX: Get the directory first
-            path = os.path.join(db_directory, filename) #<-- FIX: Build path from directory
+            db_directory = os.path.dirname(self.data_file_path) # Get the directory first
+            path = os.path.join(db_directory, filename) # Build path from directory
             results_df.to_csv(path, index=False)
             print(f"\nSuccessfully saved model performance summary to: {path}")
         except Exception as e:
@@ -481,9 +583,14 @@ class ModelTrainer:
             X_train_initial = self.train_df[feature_list]
             X_test_initial = self.test_df[feature_list]
             
-            if self.analysis_type == 'classification':
+            if self.analysis_type == 'binary_classification':
+                print("Preparing target for BINARY classification.")
                 y_train_initial = self.train_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
                 y_test_initial = self.test_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
+            elif self.analysis_type == 'multi_class_classification':
+                print("Preparing target for MULTI-CLASS classification.")
+                y_train_initial = self.train_df[self.classification_target]
+                y_test_initial = self.test_df[self.classification_target]
             else: # Regression
                 y_train_initial = self.train_df[self.regression_target]
                 y_test_initial = self.test_df[self.regression_target]
@@ -500,11 +607,12 @@ class ModelTrainer:
             y_test = test_full[y_test_initial.name]
 
             # Block to automatically update the XGBoost grid
-            if self.analysis_type == 'classification' and "XGBoost" in param_grids:
-                imbalance_ratio = (y_train == 0).sum() / (y_train == 1).sum()
+            if self.analysis_type == 'binary_classification' and "XGBoost" in param_grids:
+                imbalance_ratio = (y_train == 0).sum() / (y_train == 1).sum() if (y_train == 1).sum() > 0 else 1
                 print(f"Calculated Imbalance Ratio (for XGBoost scale_pos_weight): {imbalance_ratio:.2f}")
                 # Add the ideal ratio to the list of values to test
-                param_grids["XGBoost"]['model__scale_pos_weight'].append(imbalance_ratio)
+                if 'model__scale_pos_weight' in param_grids["XGBoost"]:
+                    param_grids["XGBoost"]['model__scale_pos_weight'].append(imbalance_ratio)
                 
 
             for model_name, model in models_to_train.items():
@@ -544,8 +652,8 @@ class ModelTrainer:
                 y_pred = best_pipeline.predict(X_test)
                 
                 # Call the correct evaluation function 
-                if self.analysis_type == 'classification':
-                    y_pred_proba = best_pipeline.predict_proba(X_test)[:, 1]
+                if 'classification' in self.analysis_type:
+                    y_pred_proba = best_pipeline.predict_proba(X_test) 
                     results = self._evaluate_classification(model_name, best_pipeline.get_params()['model'], y_test, y_pred, y_pred_proba)
                 else: # Regression
                     results = self._evaluate_regression(model_name, best_pipeline.get_params()['model'], y_test, y_pred)
@@ -565,14 +673,17 @@ class ModelTrainer:
 
 
 if __name__ == '__main__':
-    # Get the analysis_mode from the main script's configuration
     analysis_mode = 'classification' 
-    features_filename = f"{analysis_mode}_selected_feature_sets.json"
+    
+    classification_type = 'multi_class' # 'binary' or 'multi_class'
+    trainer_analysis_type = f'{classification_type}_classification'
+    
+    features_filename = f"{classification_type}_classification_selected_feature_sets.json"
 
     trainer = ModelTrainer(
         data_file_path='postprandial_db/all_postprandial_data_with_features.csv',
         features_file_path=f'postprandial_db/{features_filename}',
-        analysis_type=analysis_mode,
+        analysis_type=trainer_analysis_type, 
         classification_target='target_hypoglycemia',
         regression_target='postprandial_glucose_min'
     )
