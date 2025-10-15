@@ -1,0 +1,13 @@
+{
+    "Pre-Meal": [
+        "num_hyper_events_12h_pre_meal",
+        "num_deep_hypo_events_1h_pre_meal"
+    ],
+    "Post-Meal Predictive": [
+        "glucose_at_meal"
+    ],
+    "Mixed": [
+        "num_hyper_events_12h_pre_meal",
+        "num_deep_hypo_events_1h_pre_meal"
+    ]
+}

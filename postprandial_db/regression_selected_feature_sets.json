@@ -50,7 +50,10 @@
         "glucose_at_meal",
         "max_descent_rate_15min_post_peak",
         "first_glucose_peak_value_after_meal",
-        "auc_glucose_rise"
+        "auc_glucose_rise",
+        "hr_mean_15min_post_peak",
+        "hr_max_15min_post_peak",
+        "glucose_value_15min_after_peak1"
     ],
     "Mixed": [
         "mean_glucose_24h_pre_meal",
@@ -84,6 +87,7 @@
         "num_deep_hypo_events_12h_pre_meal",
         "num_hyper_events_12h_pre_meal",
         "num_total_hypo_events_1h_pre_meal",
+        "glucose_value_15min_after_peak1",
         "prop_below_50_24h_pre_meal",
         "J_index_1h_pre_meal",
         "num_hyper_events_2h_pre_meal",
@@ -93,7 +97,6 @@
         "max_descent_rate_15min_post_peak",
         "num_deep_hypo_events_2h_pre_meal",
         "num_hyper_events_1h_pre_meal",
-        "first_glucose_peak_value_after_meal",
         "prop_below_50_6h_pre_meal",
         "bgri_12h_pre_meal",
         "prop_below_50_2h_pre_meal",
@@ -101,6 +104,8 @@
         "bgri_2h_pre_meal",
         "duration_deep_hypo_minutes_1h_pre_meal",
         "ADRR_24h_pre_meal",
-        "ADRR_1h_pre_meal"
+        "ADRR_1h_pre_meal",
+        "hr_mean_15min_post_peak",
+        "first_glucose_peak_value_after_meal"
     ]
 }

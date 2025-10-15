@@ -1,0 +1,51 @@
+{
+    "Pre-Meal": [
+        "lbgi_24h_pre_meal",
+        "mean_glucose_24h_pre_meal",
+        "J_index_3h_pre_meal",
+        "lbgi_2h_pre_meal",
+        "prop_50_80_3h_pre_meal",
+        "min_glucose_3h_pre_meal",
+        "duration_total_hypo_minutes_2h_pre_meal",
+        "num_hyper_events_6h_pre_meal",
+        "num_deep_hypo_events_6h_pre_meal",
+        "J_index_1h_pre_meal",
+        "duration_deep_hypo_minutes_2h_pre_meal",
+        "num_hyper_events_12h_pre_meal",
+        "bgri_12h_pre_meal",
+        "num_deep_hypo_events_3h_pre_meal",
+        "prop_80_130_24h_pre_meal",
+        "num_deep_hypo_events_1h_pre_meal",
+        "prop_80_130_12h_pre_meal",
+        "bgri_3h_pre_meal"
+    ],
+    "Post-Meal Predictive": [
+        "max_descent_rate_15min_post_peak",
+        "glucose_at_meal",
+        "rate_of_increase",
+        "meanROC",
+        "hr_min_15min_post_peak",
+        "glucose_value_15min_after_peak1",
+        "first_glucose_peak_value_after_meal"
+    ],
+    "Mixed": [
+        "lbgi_24h_pre_meal",
+        "mean_glucose_24h_pre_meal",
+        "duration_hyper_minutes_24h_pre_meal",
+        "lbgi_2h_pre_meal",
+        "num_deep_hypo_events_6h_pre_meal",
+        "num_hyper_events_3h_pre_meal",
+        "num_total_hypo_events_1h_pre_meal",
+        "num_total_hypo_events_3h_pre_meal",
+        "max_glucose_6h_pre_meal",
+        "duration_deep_hypo_minutes_2h_pre_meal",
+        "num_hyper_events_12h_pre_meal",
+        "num_deep_hypo_events_3h_pre_meal",
+        "prop_80_130_24h_pre_meal",
+        "prop_below_50_1h_pre_meal",
+        "num_deep_hypo_events_1h_pre_meal",
+        "prop_above_130_2h_pre_meal",
+        "max_descent_rate_15min_post_peak",
+        "meanROC"
+    ]
+}

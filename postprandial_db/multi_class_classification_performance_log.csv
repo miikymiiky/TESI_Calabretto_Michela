@@ -1,63 +1,52 @@
-feature_set,model,roc_auc_ovr_weighted,recall_weighted,precision_weighted,f1_weighted,mcc,accuracy,specificity_no_hypo,specificity_hypo,specificity_deep_hypo,best_params
-Mixed,XGBoost,0.7730727690688134,0.813940724478595,0.7596613904405799,0.7603379505502574,0.24027600490772824,0.813940724478595,0.17318435754189945,0.9733593242365172,0.9988551803091014,"XGBClassifier(base_score=None, booster=None, callbacks=None,
-              colsample_bylevel=None, colsample_bynode=None,
-              colsample_bytree=1.0, device=None, early_stopping_rounds=None,
-              enable_categorical=False, eval_metric='mlogloss',
-              feature_types=None, feature_weights=None, gamma=None,
-              grow_policy=None, importance_type=None,
-              interaction_constraints=None, learning_rate=0.1, max_bin=None,
-              max_cat_threshold=None, max_cat_to_onehot=None,
-              max_delta_step=None, max_depth=2, max_leaves=None,
-              min_child_weight=None, missing=nan, monotone_constraints=None,
-              multi_strategy=None, n_estimators=100, n_jobs=-1,
-              num_parallel_tree=None, ...)"
-Mixed,Support Vector Machine,0.7673234581310034,0.5636663007683864,0.7742161794562756,0.6331872240816467,0.19683803341194697,0.5636663007683864,0.7821229050279329,0.7257959714100065,0.8311390955924441,"SVC(C=0.01, class_weight='balanced', kernel='linear', probability=True,
-    random_state=42)"
-Mixed,Random Forest,0.759108866263252,0.8013172338090011,0.7342387226480134,0.7519968139957502,0.19497548544558616,0.8013172338090011,0.18156424581005587,0.958414554905783,0.9971379507727532,"RandomForestClassifier(class_weight='balanced_subsample', max_depth=20,
-                       min_samples_leaf=2, min_samples_split=5,
-                       n_estimators=700, n_jobs=-1, random_state=42)"
-Mixed,Logistic Regression,0.7534554866154909,0.5724478594950604,0.7804334047760183,0.6423656315092763,0.2133580140282635,0.5724478594950604,0.7932960893854749,0.7699805068226121,0.799084144247281,"LogisticRegression(C=0.1, class_weight='balanced', max_iter=10000,
-                   random_state=42)"
-Mixed,LightGBM,0.7510038390267044,0.6339187705817783,0.7720394698578353,0.6820993506229511,0.23426987430245175,0.6339187705817783,0.7150837988826816,0.7166991552956465,0.9261591299370349,"LGBMClassifier(class_weight='balanced', learning_rate=0.01, n_estimators=400,
-               n_jobs=-1, random_state=42, verbose=-1)"
-Post-Meal Predictive,XGBoost,0.6907955246309287,0.8035126234906695,0.6456325361088585,0.7159722950641146,0.0,0.8035126234906695,0.0,1.0,1.0,"XGBClassifier(base_score=None, booster=None, callbacks=None,
-              colsample_bylevel=None, colsample_bynode=None,
-              colsample_bytree=1.0, device=None, early_stopping_rounds=None,
-              enable_categorical=False, eval_metric='mlogloss',
-              feature_types=None, feature_weights=None, gamma=None,
-              grow_policy=None, importance_type=None,
-              interaction_constraints=None, learning_rate=0.01, max_bin=None,
-              max_cat_threshold=None, max_cat_to_onehot=None,
-              max_delta_step=None, max_depth=3, max_leaves=None,
-              min_child_weight=None, missing=nan, monotone_constraints=None,
-              multi_strategy=None, n_estimators=400, n_jobs=-1,
-              num_parallel_tree=None, ...)"
-Post-Meal Predictive,Support Vector Machine,0.6873337041387475,0.5373216245883644,0.7453629732996526,0.6068513301453259,0.1424716642713535,0.5373216245883644,0.6955307262569832,0.7199480181936322,0.8265598168288495,"SVC(C=0.1, class_weight='balanced', probability=True, random_state=42)"
-Post-Meal Predictive,Random Forest,0.6781632924106441,0.6514818880351262,0.734828712630735,0.6849390218010476,0.16602921758435993,0.6514818880351262,0.5335195530726257,0.7634827810266407,0.9404693760732684,"RandomForestClassifier(class_weight='balanced_subsample', max_depth=10,
-                       min_samples_leaf=4, min_samples_split=10,
-                       n_estimators=200, n_jobs=-1, random_state=42)"
-Post-Meal Predictive,LightGBM,0.6772435458725306,0.5532381997804611,0.7476697293881969,0.6199853301437189,0.1587144955162981,0.5532381997804611,0.6731843575418994,0.7537361923326835,0.8179736691471093,"LGBMClassifier(class_weight='balanced', learning_rate=0.01, n_estimators=200,
-               n_jobs=-1, random_state=42, verbose=-1)"
-Post-Meal Predictive,Logistic Regression,0.6394882008586966,0.5691547749725576,0.7342014847720171,0.6340919509718858,0.12653365487414905,0.5691547749725576,0.5949720670391061,0.8057179987004548,0.8048082427017744,"LogisticRegression(C=0.1, class_weight='balanced', max_iter=10000,
-                   random_state=42)"
-Pre-Meal,XGBoost,0.7413221773077897,0.8029637760702525,0.7205246568677168,0.7398483603064824,0.14762410411490612,0.8029637760702525,0.1005586592178771,0.9759584145549057,1.0,"XGBClassifier(base_score=None, booster=None, callbacks=None,
-              colsample_bylevel=None, colsample_bynode=None,
-              colsample_bytree=0.7, device=None, early_stopping_rounds=None,
-              enable_categorical=False, eval_metric='mlogloss',
-              feature_types=None, feature_weights=None, gamma=None,
-              grow_policy=None, importance_type=None,
-              interaction_constraints=None, learning_rate=0.01, max_bin=None,
-              max_cat_threshold=None, max_cat_to_onehot=None,
-              max_delta_step=None, max_depth=4, max_leaves=None,
-              min_child_weight=None, missing=nan, monotone_constraints=None,
-              multi_strategy=None, n_estimators=400, n_jobs=-1,
-              num_parallel_tree=None, ...)"
-Pre-Meal,Support Vector Machine,0.7379477422129914,0.5230515916575191,0.7623242923662813,0.5970274871211836,0.16295426345632638,0.5230515916575192,0.770949720670391,0.6965562053281351,0.8168288494562106,"SVC(C=0.01, class_weight='balanced', kernel='linear', probability=True,
-    random_state=42)"
-Pre-Meal,Random Forest,0.7371599467755312,0.7837541163556532,0.7283861924587132,0.7491860614209767,0.18574797373408666,0.7837541163556532,0.2430167597765363,0.9272254710851202,0.9937034917000572,"RandomForestClassifier(class_weight='balanced_subsample', max_depth=30,
-                       min_samples_split=10, n_estimators=700, n_jobs=-1,
+feature_set,model,roc_auc_ovr_weighted,recall_weighted,precision_weighted,f1_weighted,mcc,accuracy,mean_time_gain_min,median_time_gain_min,specificity_no_hypo,specificity_hypo,specificity_deep_hypo,best_params
+Mixed,SVC,0.7880822106428291,0.5750708215297451,0.7811505065909335,0.6367108814105235,0.23350710090277713,0.5750708215297451,49.91869918699187,40.0,0.8367346938775511,0.6338983050847458,0.9111111111111111,"SVC(class_weight='balanced', probability=True, random_state=42)"
+Mixed,RandomForest,0.788068328327367,0.7946175637393768,0.7293853989294687,0.7219160855669354,0.14483946752907825,0.7946175637393768,36.36363636363637,30.0,0.07482993197278912,0.9898305084745763,0.9955555555555555,"RandomForestClassifier(class_weight='balanced_subsample', n_jobs=-1,
                        random_state=42)"
-Pre-Meal,LightGBM,0.7104893186375802,0.5916575192096597,0.7508023411367875,0.6458473372999247,0.17763119835834393,0.5916575192096597,0.6675977653631285,0.6933073424301495,0.9124212936462507,"LGBMClassifier(class_weight='balanced', learning_rate=0.01, n_estimators=400,
-               n_jobs=-1, random_state=42, verbose=-1)"
-Pre-Meal,Logistic Regression,0.7077172676523193,0.5005488474204172,0.759163165075777,0.5830079566147232,0.14419082196384464,0.5005488474204172,0.7793296089385475,0.7563352826510721,0.7389811104751002,"LogisticRegression(C=0.1, class_weight='balanced', max_iter=25000, penalty='l1',
-                   random_state=42, solver='saga')"
+Mixed,LogisticRegression,0.7705774842173335,0.5694050991501416,0.7840880995570569,0.6365367260393793,0.23781523593944667,0.5694050991501416,49.02439024390244,40.0,0.8367346938775511,0.7067796610169491,0.8414814814814815,"LogisticRegression(class_weight='balanced', max_iter=10000, random_state=42)"
+Mixed,LightGBM,0.7646537463488674,0.7351274787535411,0.7425541825775517,0.7379209958689839,0.25600514067476093,0.7351274787535411,51.31944444444444,40.0,0.4897959183673469,0.8406779661016949,0.9733333333333334,"LGBMClassifier(class_weight='balanced', n_jobs=-1, random_state=42, verbose=-1)"
+Mixed,XGBoost,0.7435423572394126,0.7422096317280453,0.7314192149915373,0.7365543151649586,0.2253787086590078,0.7422096317280453,47.983870967741936,37.5,0.4217687074829932,0.8661016949152542,0.9733333333333334,"XGBClassifier(base_score=None, booster=None, callbacks=None,
+              colsample_bylevel=None, colsample_bynode=None,
+              colsample_bytree=None, device=None, early_stopping_rounds=None,
+              enable_categorical=False, eval_metric='mlogloss',
+              feature_types=None, feature_weights=None, gamma=None,
+              grow_policy=None, importance_type=None,
+              interaction_constraints=None, learning_rate=None, max_bin=None,
+              max_cat_threshold=None, max_cat_to_onehot=None,
+              max_delta_step=None, max_depth=None, max_leaves=None,
+              min_child_weight=None, missing=nan, monotone_constraints=None,
+              multi_strategy=None, n_estimators=None, n_jobs=-1,
+              num_parallel_tree=None, ...)"
+Post-Meal Predictive,RandomForest,0.7427657080104553,0.7966804979253111,0.7323341508110852,0.7162502386070042,0.10670626236613494,0.7966804979253111,43.333333333333336,17.5,0.04054054054054054,0.995049504950495,0.9971098265895953,"RandomForestClassifier(class_weight='balanced_subsample', n_jobs=-1,
+                       random_state=42)"
+Post-Meal Predictive,SVC,0.7308592221165692,0.5255878284923928,0.7553181824632441,0.5923681773320267,0.1711287333263072,0.5255878284923928,48.20175438596491,37.5,0.7702702702702703,0.6336633663366337,0.8742774566473989,"SVC(class_weight='balanced', probability=True, random_state=42)"
+Post-Meal Predictive,LightGBM,0.7243630791729778,0.7372060857538036,0.7381901006722956,0.7371151963443646,0.2316337527004272,0.7372060857538036,42.23076923076923,30.0,0.4391891891891892,0.8498349834983498,0.976878612716763,"LGBMClassifier(class_weight='balanced', n_jobs=-1, random_state=42, verbose=-1)"
+Post-Meal Predictive,XGBoost,0.7051364884284578,0.7565698478561549,0.7268821682661079,0.7401497891702365,0.20537827122609031,0.7565698478561549,41.96078431372549,30.0,0.34459459459459457,0.8993399339933993,0.9739884393063584,"XGBClassifier(base_score=None, booster=None, callbacks=None,
+              colsample_bylevel=None, colsample_bynode=None,
+              colsample_bytree=None, device=None, early_stopping_rounds=None,
+              enable_categorical=False, eval_metric='mlogloss',
+              feature_types=None, feature_weights=None, gamma=None,
+              grow_policy=None, importance_type=None,
+              interaction_constraints=None, learning_rate=None, max_bin=None,
+              max_cat_threshold=None, max_cat_to_onehot=None,
+              max_delta_step=None, max_depth=None, max_leaves=None,
+              min_child_weight=None, missing=nan, monotone_constraints=None,
+              multi_strategy=None, n_estimators=None, n_jobs=-1,
+              num_parallel_tree=None, ...)"
+Post-Meal Predictive,LogisticRegression,0.6321389004885511,0.4896265560165975,0.7567672349441289,0.5759504738848666,0.16072749727198124,0.4896265560165975,49.330357142857146,35.0,0.7567567567567568,0.8151815181518152,0.680635838150289,"LogisticRegression(class_weight='balanced', max_iter=10000, random_state=42)"
+Pre-Meal,LightGBM,0.7592840297901083,0.7984496124031008,0.7785615933511385,0.7879757021875331,0.2373692135139024,0.7984496124031008,48.333333333333336,45.0,0.3488372093023256,0.9172259507829977,0.9779559118236473,"LGBMClassifier(class_weight='balanced', n_jobs=-1, random_state=42, verbose=-1)"
+Pre-Meal,RandomForest,0.7591660600573796,0.8313953488372093,0.7512007903936768,0.7643203569725094,0.07869551364997454,0.8313953488372093,36.666666666666664,35.0,0.03488372093023256,0.9932885906040269,0.9979959919839679,"RandomForestClassifier(class_weight='balanced_subsample', n_jobs=-1,
+                       random_state=42)"
+Pre-Meal,XGBoost,0.7503431735087903,0.812015503875969,0.7812410052639024,0.7955614718159179,0.25811526455402334,0.812015503875969,47.06896551724138,35.0,0.3372093023255814,0.9239373601789709,0.9879759519038076,"XGBClassifier(base_score=None, booster=None, callbacks=None,
+              colsample_bylevel=None, colsample_bynode=None,
+              colsample_bytree=None, device=None, early_stopping_rounds=None,
+              enable_categorical=False, eval_metric='mlogloss',
+              feature_types=None, feature_weights=None, gamma=None,
+              grow_policy=None, importance_type=None,
+              interaction_constraints=None, learning_rate=None, max_bin=None,
+              max_cat_threshold=None, max_cat_to_onehot=None,
+              max_delta_step=None, max_depth=None, max_leaves=None,
+              min_child_weight=None, missing=nan, monotone_constraints=None,
+              multi_strategy=None, n_estimators=None, n_jobs=-1,
+              num_parallel_tree=None, ...)"
+Pre-Meal,SVC,0.724894644500254,0.6182170542635659,0.7965842868001768,0.6759694906047309,0.20762000936108296,0.6182170542635659,52.096774193548384,40.0,0.7209302325581395,0.6756152125279642,0.9438877755511023,"SVC(class_weight='balanced', probability=True, random_state=42)"
+Pre-Meal,LogisticRegression,0.6955992554285776,0.5736434108527132,0.7961845206337249,0.6515518194424763,0.17331525441854195,0.5736434108527132,50.55555555555556,45.0,0.7325581395348837,0.7539149888143176,0.8256513026052105,"LogisticRegression(class_weight='balanced', max_iter=10000, random_state=42)"

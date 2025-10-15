@@ -46,7 +46,14 @@
     ],
     "Post-Meal Predictive": [
         "max_descent_rate_15min_post_peak",
-        "glucose_at_meal"
+        "glucose_at_meal",
+        "rate_of_increase",
+        "meanROC",
+        "hr_mean_15min_post_peak",
+        "glucose_acceleration_15min_before_peak1",
+        "hr_min_15min_post_peak",
+        "glucose_value_15min_after_peak1",
+        "first_glucose_peak_value_after_meal"
     ],
     "Mixed": [
         "lbgi_24h_pre_meal",
@@ -92,6 +99,13 @@
         "ADRR_24h_pre_meal",
         "max_descent_rate_15min_post_peak",
         "prop_80_130_12h_pre_meal",
-        "bgri_3h_pre_meal"
+        "bgri_3h_pre_meal",
+        "rate_of_increase",
+        "meanROC",
+        "hr_mean_15min_post_peak",
+        "glucose_acceleration_15min_before_peak1",
+        "hr_min_15min_post_peak",
+        "glucose_value_15min_after_peak1",
+        "first_glucose_peak_value_after_meal"
     ]
 }

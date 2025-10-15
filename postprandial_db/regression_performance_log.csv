@@ -1,55 +1,49 @@
-feature_set,model,r2,mae,rmse,best_params
-Mixed,LightGBM Regressor,0.37047073861243707,11.660729499036051,15.567232331545664,"LGBMRegressor(learning_rate=0.01, n_estimators=600, n_jobs=-1, num_leaves=20,
-              random_state=42, verbose=-1)"
-Mixed,XGBoost Regressor,0.36498832491588507,11.674704363574156,15.634870965217525,"XGBRegressor(base_score=None, booster=None, callbacks=None,
+feature_set,model,r2,mae,rmse,mean_prediction_horizon,median_prediction_horizon,best_params
+Mixed,RandomForest,0.2833770687350774,10.379669303677735,13.889662124819834,47.43333333333333,40.0,"RandomForestRegressor(n_jobs=-1, random_state=42)"
+Mixed,LightGBM,0.271444190032322,10.566788622769419,14.00482685068216,47.43333333333333,40.0,"LGBMRegressor(n_jobs=-1, random_state=42, verbose=-1)"
+Mixed,Ridge,0.2590117313475243,10.755831637724677,14.123814239674774,47.43333333333333,40.0,Ridge(random_state=42)
+Mixed,SVR,0.25873687675078394,10.747779340726435,14.126433468285642,47.43333333333333,40.0,SVR()
+Mixed,Lasso,0.2532091533446098,10.83376615077831,14.179007229051825,47.43333333333333,40.0,"Lasso(max_iter=5000, random_state=42)"
+Mixed,XGBoost,0.2260096639202539,10.828148815848031,14.434910647296668,47.43333333333333,40.0,"XGBRegressor(base_score=None, booster=None, callbacks=None,
              colsample_bylevel=None, colsample_bynode=None,
              colsample_bytree=None, device=None, early_stopping_rounds=None,
              enable_categorical=False, eval_metric=None, feature_types=None,
              feature_weights=None, gamma=None, grow_policy=None,
              importance_type=None, interaction_constraints=None,
-             learning_rate=0.01, max_bin=None, max_cat_threshold=None,
-             max_cat_to_onehot=None, max_delta_step=None, max_depth=5,
+             learning_rate=None, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=None,
              max_leaves=None, min_child_weight=None, missing=nan,
-             monotone_constraints=None, multi_strategy=None, n_estimators=500,
+             monotone_constraints=None, multi_strategy=None, n_estimators=None,
              n_jobs=-1, num_parallel_tree=None, ...)"
-Mixed,Random Forest Regressor,0.3452156275069366,11.79632654700679,15.87642072333862,"RandomForestRegressor(min_samples_leaf=2, n_estimators=500, n_jobs=-1,
-                      random_state=42)"
-Mixed,Ridge Regression,0.3187294206940209,12.269951433748245,16.194340387928197,"Ridge(alpha=200.0, random_state=42)"
-Mixed,Support Vector Regressor,0.31849854750698026,12.273245134594218,16.19708417460003,"SVR(C=0.1, kernel='linear')"
-Mixed,Lasso Regression,0.31346225545476636,12.34974836092599,16.256822194114562,"Lasso(alpha=0.1, max_iter=5000, random_state=42)"
-Post-Meal Predictive,LightGBM Regressor,0.2507297791220443,12.746914707441025,16.983323509924126,"LGBMRegressor(learning_rate=0.01, n_estimators=600, n_jobs=-1, num_leaves=20,
-              random_state=42, verbose=-1)"
-Post-Meal Predictive,Random Forest Regressor,0.24533941483416788,12.821081702061326,17.044304340394124,"RandomForestRegressor(max_depth=10, min_samples_split=5, n_jobs=-1,
-                      random_state=42)"
-Post-Meal Predictive,XGBoost Regressor,0.24505559205830751,12.869182194092499,17.04750916326912,"XGBRegressor(base_score=None, booster=None, callbacks=None,
+Post-Meal Predictive,SVR,0.18589183156196798,11.360765495240896,14.804283288669419,47.43333333333333,40.0,SVR()
+Post-Meal Predictive,LightGBM,0.152493656525304,11.57987515900856,15.10489844060972,47.43333333333333,40.0,"LGBMRegressor(n_jobs=-1, random_state=42, verbose=-1)"
+Post-Meal Predictive,Ridge,0.14364142092687449,11.78735080180328,15.183579134475076,47.43333333333333,40.0,Ridge(random_state=42)
+Post-Meal Predictive,RandomForest,0.14014246988043988,11.63245421984187,15.214566413154056,47.43333333333333,40.0,"RandomForestRegressor(n_jobs=-1, random_state=42)"
+Post-Meal Predictive,Lasso,0.11256312957564008,12.023299363796493,15.45663904400689,47.43333333333333,40.0,"Lasso(max_iter=5000, random_state=42)"
+Post-Meal Predictive,XGBoost,0.08872718552934733,12.007161887709094,15.662840955807352,47.43333333333333,40.0,"XGBRegressor(base_score=None, booster=None, callbacks=None,
              colsample_bylevel=None, colsample_bynode=None,
              colsample_bytree=None, device=None, early_stopping_rounds=None,
              enable_categorical=False, eval_metric=None, feature_types=None,
              feature_weights=None, gamma=None, grow_policy=None,
              importance_type=None, interaction_constraints=None,
-             learning_rate=0.01, max_bin=None, max_cat_threshold=None,
-             max_cat_to_onehot=None, max_delta_step=None, max_depth=3,
+             learning_rate=None, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=None,
              max_leaves=None, min_child_weight=None, missing=nan,
-             monotone_constraints=None, multi_strategy=None, n_estimators=500,
+             monotone_constraints=None, multi_strategy=None, n_estimators=None,
              n_jobs=-1, num_parallel_tree=None, ...)"
-Post-Meal Predictive,Support Vector Regressor,0.24404825847663925,12.769631450689973,17.05887874473215,SVR(C=10)
-Post-Meal Predictive,Ridge Regression,0.1585466809477245,13.761836893342235,17.997760165215983,"Ridge(alpha=10.0, random_state=42)"
-Post-Meal Predictive,Lasso Regression,0.15854470584149483,13.762042392053225,17.997781287877547,"Lasso(alpha=0.01, max_iter=5000, random_state=42)"
-Pre-Meal,Support Vector Regressor,0.2729798327749545,12.696139592527754,16.72925786252351,"SVR(C=0.1, kernel='linear')"
-Pre-Meal,Ridge Regression,0.2720519127937414,12.721962802191863,16.73993051181016,"Ridge(alpha=200.0, random_state=42)"
-Pre-Meal,Lasso Regression,0.2687135085305308,12.78112908003004,16.778271658968144,"Lasso(alpha=0.1, max_iter=5000, random_state=42)"
-Pre-Meal,XGBoost Regressor,0.26454023803730964,12.792866334366101,16.82607826678799,"XGBRegressor(base_score=None, booster=None, callbacks=None,
+Pre-Meal,Lasso,0.19478352461716386,11.166347599936845,14.723215100020248,47.43333333333333,40.0,"Lasso(max_iter=5000, random_state=42)"
+Pre-Meal,Ridge,0.1909618498018416,11.18503441560877,14.75811300436118,47.43333333333333,40.0,Ridge(random_state=42)
+Pre-Meal,LightGBM,0.18107830963645966,11.360080103024377,14.847984924755476,47.43333333333333,40.0,"LGBMRegressor(n_jobs=-1, random_state=42, verbose=-1)"
+Pre-Meal,RandomForest,0.18016465881033705,11.338891557446606,14.856265381961306,47.43333333333333,40.0,"RandomForestRegressor(n_jobs=-1, random_state=42)"
+Pre-Meal,SVR,0.17767964247650314,11.292596440484225,14.878763880661896,47.43333333333333,40.0,SVR()
+Pre-Meal,XGBoost,0.06945153654313851,12.212876991828965,15.82762780325219,47.43333333333333,40.0,"XGBRegressor(base_score=None, booster=None, callbacks=None,
              colsample_bylevel=None, colsample_bynode=None,
              colsample_bytree=None, device=None, early_stopping_rounds=None,
              enable_categorical=False, eval_metric=None, feature_types=None,
              feature_weights=None, gamma=None, grow_policy=None,
              importance_type=None, interaction_constraints=None,
-             learning_rate=0.1, max_bin=None, max_cat_threshold=None,
-             max_cat_to_onehot=None, max_delta_step=None, max_depth=3,
+             learning_rate=None, max_bin=None, max_cat_threshold=None,
+             max_cat_to_onehot=None, max_delta_step=None, max_depth=None,
              max_leaves=None, min_child_weight=None, missing=nan,
-             monotone_constraints=None, multi_strategy=None, n_estimators=100,
+             monotone_constraints=None, multi_strategy=None, n_estimators=None,
              n_jobs=-1, num_parallel_tree=None, ...)"
-Pre-Meal,LightGBM Regressor,0.26389783040916315,12.829293172944073,16.83342526401399,"LGBMRegressor(learning_rate=0.01, n_estimators=400, n_jobs=-1, num_leaves=20,
-              random_state=42, verbose=-1)"
-Pre-Meal,Random Forest Regressor,0.2563144132191427,12.878034303736017,16.919913115383824,"RandomForestRegressor(max_depth=10, min_samples_leaf=2, min_samples_split=5,
-                      n_estimators=200, n_jobs=-1, random_state=42)"
