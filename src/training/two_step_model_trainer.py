@@ -12,6 +12,8 @@ import os
 import json
 import random
 from sklearn.model_selection import GroupKFold, GridSearchCV, ParameterGrid
+from imblearn.over_sampling import SMOTE                   
+from imblearn.pipeline import Pipeline as ImbPipeline
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
@@ -36,6 +38,19 @@ class TwoStepClassifier(BaseEstimator, ClassifierMixin):
     def __init__(self, classifier1, classifier2):
         self.classifier1 = classifier1
         self.classifier2 = classifier2
+        
+        # Check if classifier2 has been fitted by looking for a standard attribute.
+        # A fitted scikit-learn classifier will have the 'classes_' attribute.
+        # This ensures the 'is_step2_trained_' flag is set upon creation.
+        if hasattr(self.classifier2, 'classes_'):
+            self.is_step2_trained_ = True
+        else:
+            self.is_step2_trained_ = False
+        
+        # Define the mapping dictionaries upon initialization.
+        # They are constant and do not depend on the training data.
+        self.y2_map = {1: 0, 2: 1}
+        self.y2_inv_map = {0: 1, 1: 2}
 
 
 
@@ -144,9 +159,91 @@ class TwoStepModelTrainer:
         self.n_splits = n_splits
         
         self.df = self._load_data()
+        self.df = self._apply_pre_split_filters(self.df) # Apply filters before splitting
         self.feature_sets = self._load_feature_sets()
+        self._display_loaded_feature_sets()
         self.results_log = []
         self.best_model = None
+    
+    
+    
+    
+    def _display_loaded_feature_sets(self):
+        """
+        Prints the loaded feature sets in a clear, formatted way for verification.
+        """
+        if not self.feature_sets:
+            print("\nWARNING: No feature sets were loaded for this training run.")
+            return
+
+        print("\n" + "#"*80)
+        print("### FEATURE SETS LOADED FOR THIS TRAINING RUN ###")
+        print(f"Source File: {self.features_file_path}")
+        print("#"*80)
+
+        for set_name, features in self.feature_sets.items():
+            print("\n" + "="*80)
+            print(f"--- Feature Set: '{set_name}' ---")
+            print(f"Total Features: {len(features)}")
+            print("="*80)
+            if not features:
+                print("  (No features in this set)")
+            else:
+                for i, feature in enumerate(features, 1):
+                    print(f"  {i:2d}. {feature}")
+        print("\n" + "#"*80 + "\n")
+    
+    
+    
+    def _apply_pre_split_filters(self, df):
+        """Applies the standard project filters to the dataframe before data splitting."""
+        if df.empty:
+            return df
+
+        print("\n--- Applying Pre-Split Filters to the Dataset ---")
+        initial_rows = len(df)
+
+        # These filters are copied from main.py to ensure consistency
+        non_wearable_filters = [
+            {'column': 'hypo_to_check_flag', 'operator': '!=', 'value': 0},
+            {'column': 'postprandial_duration_minutes', 'operator': '>', 'value': 120},
+            {'column': 'time_peak_hypo_event', 'operator': '>', 'value': -1},
+            {'column': 'rate_of_increase', 'operator': '>', 'value': 0},
+            {'column': 'glucose_derivative_15min_before_peak1', 'operator': '>', 'value': 0},
+            {'column': 'glucose_derivative_15min_after_peak1', 'operator': '<', 'value': 0},
+        ]
+        wearable_filters = [
+            {'column': 'has_heart_rate_data', 'operator': '==', 'value': 1},
+            {'column': 'has_pulse_ox_data', 'operator': '==', 'value': 1},
+            {'column': 'has_steps_data', 'operator': '==', 'value': 1},
+        ]
+        all_filters = non_wearable_filters + wearable_filters
+
+        # Apply each filter condition
+        for condition in all_filters:
+            col = condition['column']
+            op = condition['operator']
+            val = condition['value']
+            
+            if col not in df.columns:
+                print(f"Warning: Filter column '{col}' not found. Skipping filter.")
+                continue
+
+            if op == '>': df = df[df[col] > val]
+            elif op == '<': df = df[df[col] < val]
+            elif op == '==': df = df[df[col] == val]
+            elif op == '>=': df = df[df[col] >= val]
+            elif op == '<=': df = df[df[col] <= val]
+            elif op == '!=': df = df[df[col] != val]
+
+        final_rows = len(df)
+        print(f"Filtered dataset from {initial_rows} to {final_rows} rows before splitting.")
+        
+        print("\n--- Target Class Distribution After Filtering ---")
+        if self.classification_target in df.columns:
+            print(df[self.classification_target].value_counts())
+            
+        return df
 
 
 
@@ -156,20 +253,20 @@ class TwoStepModelTrainer:
         """
         return {
             "XGB_to_XGB": {
-                "classifier1": XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
+                "classifier1": XGBClassifier(random_state=self.random_state, eval_metric='logloss', scale_pos_weight=5.0),
                 "params1": {
                     'n_estimators': [50, 100, 200], 
                     'max_depth': [1, 2, 3, 4, 5], 
                     'scale_pos_weight': [1, 4, 5]
                 },
-                "classifier2": XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
+                "classifier2": XGBClassifier(random_state=self.random_state, eval_metric='logloss', scale_pos_weight=5.0),
                 "params2": {
                     'n_estimators': [30, 50, 100], 
                     'max_depth': [1, 2, 3]
                 }
             },
             "XGB_to_LogReg": {
-                "classifier1": XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
+                "classifier1": XGBClassifier(random_state=self.random_state, eval_metric='logloss', scale_pos_weight=5.0),
                 "params1": {
                     'n_estimators': [50, 100, 200], 
                     'max_depth': [1, 2, 3, 4, 5], 
@@ -189,7 +286,7 @@ class TwoStepModelTrainer:
                     'C': [0.01, 0.1, 1, 10],
                     'solver': ['liblinear', 'saga']
                 },
-                "classifier2": XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
+                "classifier2": XGBClassifier(random_state=self.random_state, eval_metric='logloss', scale_pos_weight=5.0),
                 "params2": {
                     'n_estimators': [30, 50, 100],
                     'max_depth': [1, 2, 3]
@@ -210,83 +307,6 @@ class TwoStepModelTrainer:
                 }
             }
         }
-    
-    
-    
-    # def _get_model_combinations(self) -> dict:
-    #     """
-    #     Defines the dictionary of model combinations and parameter grids to be tested.
-    #     """
-    #     return {
-    #         "XGB_to_XGB": {
-    #             "model": TwoStepClassifier(
-    #                 classifier1=XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
-    #                 classifier2=XGBClassifier(random_state=self.random_state, eval_metric='logloss')
-    #             ),
-    #             "params": {
-    #                 'model__classifier1__n_estimators': [50, 100, 200], 
-    #                 'model__classifier1__max_depth': [1, 2, 3, 4, 5], 
-    #                 'model__classifier1__scale_pos_weight': [1, 4, 5],
-                    
-    #                 'model__classifier2__n_estimators': [30, 50, 100], 
-    #                 'model__classifier2__max_depth': [1, 2, 3]
-    #             }
-    #         },
-    #         "XGB_to_LogReg": {
-    #             "model": TwoStepClassifier(
-    #                 classifier1=XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
-    #                 classifier2=LogisticRegression(random_state=self.random_state, max_iter=5000, class_weight='balanced')
-    #             ),
-    #             "params": {
-    #                 'model__classifier1__n_estimators': [50, 100, 200], 
-    #                 'model__classifier1__max_depth': [1, 2, 3, 4, 5], 
-    #                 'model__classifier1__scale_pos_weight': [4, 5],
-                    
-    #                 'model__classifier2__penalty': ['l1', 'l2'], 
-    #                 'model__classifier2__C': [0.01, 0.1, 1, 10], 
-    #                 'model__classifier2__solver': ['liblinear']
-    #             }
-    #         },
-    #         "LogReg_to_XGB": {
-    #             "model": TwoStepClassifier(
-    #                 classifier1=LogisticRegression(random_state=self.random_state, max_iter=5000, class_weight='balanced'),
-    #                 classifier2=XGBClassifier(random_state=self.random_state, eval_metric='logloss')
-    #             ),
-    #             "params": [
-    #                 {
-    #                     'model__classifier1__penalty': ['l1', 'l2'],
-    #                     'model__classifier1__C': [0.01, 0.1, 1, 10],
-    #                     'model__classifier1__solver': ['liblinear'],
-                        
-    #                     'model__classifier2__n_estimators': [30, 50, 100],
-    #                     'model__classifier2__max_depth': [1, 2, 3]
-    #                 },
-    #                 {
-    #                     'model__classifier1__penalty': ['l1', 'l2'],
-    #                     'model__classifier1__C': [0.01, 0.1, 1, 10],
-    #                     'model__classifier1__solver': ['saga'],
-                        
-    #                     'model__classifier2__n_estimators': [30, 50, 100],
-    #                     'model__classifier2__max_depth': [1, 2, 3]
-    #                 }
-    #             ]
-    #         },
-    #         "LogReg_to_LogReg": {
-    #             "model": TwoStepClassifier(
-    #                 classifier1=LogisticRegression(random_state=self.random_state, max_iter=5000, class_weight='balanced'),
-    #                 classifier2=LogisticRegression(random_state=self.random_state, max_iter=5000, class_weight='balanced')
-    #             ),
-    #             "params": {
-    #                 'model__classifier1__penalty': ['l2'],
-    #                 'model__classifier1__C': [0.01, 0.1, 1, 10],
-    #                 'model__classifier1__solver': ['saga'],
-                    
-    #                 'model__classifier2__penalty': ['l1'],
-    #                 'model__classifier2__C': [0.01, 0.1, 1, 10],
-    #                 'model__classifier2__solver': ['liblinear']
-    #             }
-    #         }
-    #     }
 
 
 
@@ -360,172 +380,148 @@ class TwoStepModelTrainer:
         
     
     
-    def _tune_classifier1(self, X_train, y_train, groups, pipeline, param_grid):
-        print("--- Tuning Stage 1 Classifier (Optimizing for Recall) ---")
-        cv = GroupKFold(n_splits=self.n_splits) # ensures that during CV the same group is not represented in both training and testing folds
-        param_iterator = ParameterGrid(param_grid) # ParameterGrid(param_grid) ---> expands a dictionary of parameters into all possible combinations
-        best_score = -1
-        best_params = None
-
-        y1_train = (y_train > 0).astype(int) # Target for stage 1
-        
-        # Loop that iterates through each parameter set
-        for params in param_iterator:
-            fold_scores = []
-            for train_idx, test_idx in cv.split(X_train, y1_train, groups): # cv.split() ---> splits the data into train/test indices according to groups
-                # Create a fresh copy of the pipeline so that previous training doesn’t carry over
-                cloned_pipeline = clone(pipeline)
-                cloned_pipeline.set_params(**params) # inject the current parameter set into the pipeline
-                
-                # Manually impute and scale data for this fold
-                # Use the fold indices to create training and test subsets for that fold (split into training and test set)
-                imputer = SimpleImputer(strategy='median'); scaler = StandardScaler()
-                X_train_fold = scaler.fit_transform(imputer.fit_transform(X_train.iloc[train_idx])); y_train_fold = y1_train.iloc[train_idx]
-                X_test_fold = scaler.transform(imputer.transform(X_train.iloc[test_idx])); y_test_fold = y1_train.iloc[test_idx]
-               
-                # # Use the fold indices to create training and test subsets for that fold (split into training and test set)
-                # X_train_fold, y_train_fold = X_train.iloc[train_idx], y1_train.iloc[train_idx]
-                # X_test_fold, y_test_fold = X_train.iloc[test_idx], y1_train.iloc[test_idx]
-
-                cloned_pipeline.fit(X_train_fold, y_train_fold)
-                y_pred = cloned_pipeline.predict(X_test_fold)
-                
-                # The parameter set with the best recall score will be the chosen one for the first classifier
-                # Recall for the positive class (class 1: any hypo)
-                score = recall_score(y_test_fold, y_pred, pos_label=1, zero_division=0)
-                fold_scores.append(score)
-            
-            mean_score = np.mean(fold_scores) # append NaN when it fails
-            if mean_score > best_score:
-                best_score = mean_score
-                best_params = params
-
-        print(f"Best Recall for Stage 1: {best_score:.4f}")
-        print(f"Best Params for Stage 1: {best_params}")
-
-        best_pipeline_c1 = clone(pipeline).set_params(**best_params)
-        best_pipeline_c1.fit(X_train, y1_train) # refit on all training data
-        return best_pipeline_c1
-
+    # --- CHANGES START ---
     
+    def _tune_classifier1(self, X_train, y_train, groups, pipeline, param_grid):
+        print("--- Fitting Stage 1 Classifier (Skipping Tuning) ---")
+        y1_train = (y_train > 0).astype(int) # Target for stage 1
+        pipeline.fit(X_train, y1_train)
+        return pipeline
 
     def _tune_classifier2(self, X_train, y_train, groups, pipeline, param_grid):
-        print("--- Tuning Stage 2 Classifier (Optimizing for AUC) ---")
-        cv = GroupKFold(n_splits=self.n_splits) # ensures that during CV the same group is not represented in both training and testing folds
-        param_iterator = ParameterGrid(param_grid) # ParameterGrid(param_grid) ---> expands a dictionary of parameters into all possible combinations
-        best_score = -1
-        best_params = None
-
+        print("--- Fitting Stage 2 Classifier (Skipping Tuning) ---")
+        
         # Prepare data for stage 2 (only hypo events)
         mask_hypo = y_train > 0
         X2_train = X_train[mask_hypo]
         y2_train_original = y_train[mask_hypo]
         y2_train_mapped = y2_train_original.map({1: 0, 2: 1})
-        groups2 = groups[mask_hypo]
 
-        if len(y2_train_mapped.unique()) < 2:
-            print("Warning: Only one class present for Stage 2 tuning. Skipping.")
-            return clone(pipeline).fit(X2_train, y2_train_mapped) # Return a default fitted model
+        if y2_train_mapped.nunique() < 2:
+            print("Warning: Only one class present for Stage 2. Skipping fitting.")
+            # Return a dummy or unfitted pipeline
+            return pipeline 
         
-        # Loop that iterates through each parameter set
-        for params in param_iterator:
-            fold_scores = []
-            for train_idx, test_idx in cv.split(X2_train, y2_train_mapped, groups2): # cv.split() ---> splits the data into train/test indices according to groups
-                # Create a fresh copy of the pipeline so that previous training doesn’t carry over
-                cloned_pipeline = clone(pipeline)
-                cloned_pipeline.set_params(**params) # inject the current parameter set into the pipeline
-                
-                # Manually impute and scale data for this fold
-                # Use the fold indices to create training and test subsets for that fold (split into training and test set)
-                imputer = SimpleImputer(strategy='median'); scaler = StandardScaler()
-                X_train_fold = scaler.fit_transform(imputer.fit_transform(X2_train.iloc[train_idx])); y_train_fold = y2_train_mapped.iloc[train_idx]
-                X_test_fold = scaler.transform(imputer.transform(X2_train.iloc[test_idx])); y_test_fold = y2_train_mapped.iloc[test_idx]
-              
-                # # Use the fold indices to create training and test subsets for that fold (split into training and test set)
-                # X_train_fold, y_train_fold = X2_train.iloc[train_idx], y2_train_mapped.iloc[train_idx]
-                # X_test_fold, y_test_fold = X2_train.iloc[test_idx], y2_train_mapped.iloc[test_idx]
-                
-                cloned_pipeline.fit(X_train_fold, y_train_fold)
-                
-                # Check if both classes are in the test fold before scoring AUC
-                if len(np.unique(y_test_fold)) > 1:
-                    y_pred_proba = cloned_pipeline.predict_proba(X_test_fold)[:, 1]
-                    # The parameter set with the best AUC score will be the chosen one for the second classifier
-                    score = roc_auc_score(y_test_fold, y_pred_proba)
-                    fold_scores.append(score)
-            
-            if fold_scores: # Only if we could calculate scores
-                mean_score = np.mean(fold_scores) # append NaN when it fails
-                if mean_score > best_score:
-                    best_score = mean_score
-                    best_params = params
-        
-        print(f"Best AUC for Stage 2: {best_score:.4f}")
-        print(f"Best Params for Stage 2: {best_params}")
-
-        best_pipeline_c2 = clone(pipeline).set_params(**best_params)
-        best_pipeline_c2.fit(X2_train, y2_train_mapped) # refit on all training data
-        return best_pipeline_c2
-
-        
+        pipeline.fit(X2_train, y2_train_mapped)
+        return pipeline
     
-    # def _perform_grid_search(self, pipeline, param_grid, X_train, y_train, groups):
-    #     print("--- Starting Manual Grid Search Cross-Validation ---")
-        
+    
+    
+    # TUNING & CV CODE TO COMMENT OUT FOR NOW
+    
+    # def _tune_classifier1(self, X_train, y_train, groups, pipeline, param_grid):
+    #     print("--- Tuning Stage 1 Classifier (Optimizing for Recall) ---")
     #     cv = GroupKFold(n_splits=self.n_splits) # ensures that during CV the same group is not represented in both training and testing folds
     #     param_iterator = ParameterGrid(param_grid) # ParameterGrid(param_grid) ---> expands a dictionary of parameters into all possible combinations
-        
     #     best_score = -1
     #     best_params = None
 
+    #     y1_train = (y_train > 0).astype(int) # Target for stage 1
+        
     #     # Loop that iterates through each parameter set
-    #     for i, params in enumerate(param_iterator):
-    #         #print(f"Testing params {i+1}/{len(param_iterator)}: {params}")
+    #     for params in param_iterator:
     #         fold_scores = []
-            
-    #         for fold_idx, (train_idx, test_idx) in enumerate(cv.split(X_train, y_train, groups)): # cv.split() ---> splits the data into train/test indices according to groups
+    #         for train_idx, test_idx in cv.split(X_train, y1_train, groups): # cv.split() ---> splits the data into train/test indices according to groups
     #             # Create a fresh copy of the pipeline so that previous training doesn’t carry over
     #             cloned_pipeline = clone(pipeline)
     #             cloned_pipeline.set_params(**params) # inject the current parameter set into the pipeline
                 
+    #             # Manually impute and scale data for this fold
     #             # Use the fold indices to create training and test subsets for that fold (split into training and test set)
-    #             X_train_fold, y_train_fold = X_train.iloc[train_idx], y_train.iloc[train_idx]
-    #             X_test_fold, y_test_fold = X_train.iloc[test_idx], y_train.iloc[test_idx]
+    #             imputer = SimpleImputer(strategy='median'); scaler = StandardScaler()
+    #             X_train_fold = scaler.fit_transform(imputer.fit_transform(X_train.iloc[train_idx])); y_train_fold = y1_train.iloc[train_idx]
+    #             X_test_fold = scaler.transform(imputer.transform(X_train.iloc[test_idx])); y_test_fold = y1_train.iloc[test_idx]
+               
+    #             # # Use the fold indices to create training and test subsets for that fold (split into training and test set)
+    #             # X_train_fold, y_train_fold = X_train.iloc[train_idx], y1_train.iloc[train_idx]
+    #             # X_test_fold, y_test_fold = X_train.iloc[test_idx], y1_train.iloc[test_idx]
+
+    #             cloned_pipeline.fit(X_train_fold, y_train_fold)
+    #             y_pred = cloned_pipeline.predict(X_test_fold)
                 
-    #             try:
-    #                 cloned_pipeline.fit(X_train_fold, y_train_fold)
-    #                 y_pred_proba = cloned_pipeline.predict_proba(X_test_fold)
-    #                 score = roc_auc_score(y_test_fold, y_pred_proba, multi_class='ovr', average='weighted')
-    #                 fold_scores.append(score)
-    #             except Exception as e:
-    #                 print(f"  [Fold {fold_idx+1}] Error during fit/score: {e}. Skipping fold.")
-    #                 fold_scores.append(np.nan) # append NaN when it fails
-
-    #         mean_score = np.nanmean(fold_scores) # np.nanmean ---> ignores failed foldsthat are NaN when computing the average score
-    #         #print(f"  -> Mean CV Score (AUC): {mean_score:.4f}")
-
+    #             # The parameter set with the best recall score will be the chosen one for the first classifier
+    #             # Recall for the positive class (class 1: any hypo)
+    #             score = recall_score(y_test_fold, y_pred, pos_label=1, zero_division=0)
+    #             fold_scores.append(score)
+            
+    #         mean_score = np.mean(fold_scores) # append NaN when it fails
     #         if mean_score > best_score:
     #             best_score = mean_score
     #             best_params = params
+
+    #     print(f"Best Recall for Stage 1: {best_score:.4f}")
+    #     print(f"Best Params for Stage 1: {best_params}")
+
+    #     best_pipeline_c1 = clone(pipeline).set_params(**best_params)
+    #     best_pipeline_c1.fit(X_train, y1_train) # refit on all training data
+    #     return best_pipeline_c1
+
+    
+
+    # def _tune_classifier2(self, X_train, y_train, groups, pipeline, param_grid):
+    #     print("--- Tuning Stage 2 Classifier (Optimizing for AUC) ---")
+    #     cv = GroupKFold(n_splits=self.n_splits) # ensures that during CV the same group is not represented in both training and testing folds
+    #     param_iterator = ParameterGrid(param_grid) # ParameterGrid(param_grid) ---> expands a dictionary of parameters into all possible combinations
+    #     best_score = -1
+    #     best_params = None
+
+    #     # Prepare data for stage 2 (only hypo events)
+    #     mask_hypo = y_train > 0
+    #     X2_train = X_train[mask_hypo]
+    #     y2_train_original = y_train[mask_hypo]
+    #     y2_train_mapped = y2_train_original.map({1: 0, 2: 1})
+    #     groups2 = groups[mask_hypo]
+
+    #     if len(y2_train_mapped.unique()) < 2:
+    #         print("Warning: Only one class present for Stage 2 tuning. Skipping.")
+    #         return clone(pipeline).fit(X2_train, y2_train_mapped) # Return a default fitted model
         
-    #     print("\n--- Manual Grid Search Results ---")
-    #     print(f"Best Parameters Found: {best_params}")
-    #     print(f"Best Mean CV Score (AUC): {best_score:.4f}")
-
-    #     # Refit the best model on the entire training data
-    #     print("Refitting the best model on the entire training set...")
-    #     best_pipeline = clone(pipeline)
-    #     best_pipeline.set_params(**best_params)
-    #     best_pipeline.fit(X_train, y_train)
+    #     # Loop that iterates through each parameter set
+    #     for params in param_iterator:
+    #         fold_scores = []
+    #         for train_idx, test_idx in cv.split(X2_train, y2_train_mapped, groups2): # cv.split() ---> splits the data into train/test indices according to groups
+    #             # Create a fresh copy of the pipeline so that previous training doesn’t carry over
+    #             cloned_pipeline = clone(pipeline)
+    #             cloned_pipeline.set_params(**params) # inject the current parameter set into the pipeline
+                
+    #             # Manually impute and scale data for this fold
+    #             # Use the fold indices to create training and test subsets for that fold (split into training and test set)
+    #             imputer = SimpleImputer(strategy='median'); scaler = StandardScaler()
+    #             X_train_fold = scaler.fit_transform(imputer.fit_transform(X2_train.iloc[train_idx])); y_train_fold = y2_train_mapped.iloc[train_idx]
+    #             X_test_fold = scaler.transform(imputer.transform(X2_train.iloc[test_idx])); y_test_fold = y2_train_mapped.iloc[test_idx]
+              
+    #             # # Use the fold indices to create training and test subsets for that fold (split into training and test set)
+    #             # X_train_fold, y_train_fold = X2_train.iloc[train_idx], y2_train_mapped.iloc[train_idx]
+    #             # X_test_fold, y_test_fold = X2_train.iloc[test_idx], y2_train_mapped.iloc[test_idx]
+                
+    #             cloned_pipeline.fit(X_train_fold, y_train_fold)
+                
+    #             # Check if both classes are in the test fold before scoring AUC
+    #             if len(np.unique(y_test_fold)) > 1:
+    #                 y_pred_proba = cloned_pipeline.predict_proba(X_test_fold)[:, 1]
+    #                 # The parameter set with the best AUC score will be the chosen one for the second classifier
+    #                 score = roc_auc_score(y_test_fold, y_pred_proba)
+    #                 fold_scores.append(score)
+            
+    #         if fold_scores: # Only if we could calculate scores
+    #             mean_score = np.mean(fold_scores) # append NaN when it fails
+    #             if mean_score > best_score:
+    #                 best_score = mean_score
+    #                 best_params = params
         
-    #     return best_pipeline
+    #     print(f"Best AUC for Stage 2: {best_score:.4f}")
+    #     print(f"Best Params for Stage 2: {best_params}")
+
+    #     best_pipeline_c2 = clone(pipeline).set_params(**best_params)
+    #     best_pipeline_c2.fit(X2_train, y2_train_mapped) # refit on all training data
+    #     return best_pipeline_c2
+
+    # --- CHANGES FINISH ---
+    
 
 
-
-    def evaluate(self, model_combo_name: str, feature_set_name: str, feature_list: list):
+    def evaluate(self, X_test, y_true, test_df_full, model_combo_name: str, feature_set_name: str):
         print(f"\n--- Evaluating on Test Set ({model_combo_name}) ---")
-        X_test = self.test_df[feature_list]
-        y_true = self.test_df[self.classification_target]
         
         y_pred = self.best_model.predict(X_test)
         y_pred_proba = self.best_model.predict_proba(X_test)
@@ -537,6 +533,35 @@ class TwoStepModelTrainer:
         print(f"Weighted OvR AUC-ROC: {auc_score:.4f}")
         print(classification_report(y_true, y_pred, target_names=['No Hypo', 'Hypo', 'Deep Hypo'], zero_division=0))
         
+        # Time Gain Calculation
+        true_positives_mask = (y_true.values > 0) & (y_pred > 0)
+        mean_time_gain, median_time_gain = np.nan, np.nan
+        print("\n--- Time Gain Analysis (for True Positives) ---")
+        if np.any(true_positives_mask):
+            tp_df = test_df_full.loc[true_positives_mask].copy()
+            
+            # Merge the hypo time back in using the original index
+            hypo_time_series = self.df['postprandial_hypo_time']
+            tp_df = tp_df.merge(hypo_time_series, left_index=True, right_index=True, how='left')
+
+            tp_df['meal_time_start'] = pd.to_datetime(tp_df['meal_time_start'])
+            tp_df['postprandial_hypo_time'] = pd.to_datetime(tp_df['postprandial_hypo_time'])
+
+            prediction_time = tp_df['meal_time_start'] + pd.to_timedelta(tp_df['time_to_first_glucose_peak_after_meal'] + 15, unit='m')
+            time_gain = (tp_df['postprandial_hypo_time'] - prediction_time).dt.total_seconds() / 60
+            time_gain = time_gain[time_gain > 0]
+            
+            if not time_gain.empty:
+                mean_time_gain = time_gain.mean()
+                median_time_gain = time_gain.median()
+                print(f"Number of useful predictions (TPs made before event): {len(time_gain)} / {true_positives_mask.sum()}")
+                print(f"Average Time Gain: {mean_time_gain:.1f} minutes")
+                print(f"Median Time Gain:  {median_time_gain:.1f} minutes")
+            else:
+                print("No true positive predictions were made before the event occurred.")
+        else:
+            print("No True Positives to analyze.")
+        
         self.results_log.append({
             'model_combination': model_combo_name,
             'feature_set': feature_set_name,
@@ -545,7 +570,9 @@ class TwoStepModelTrainer:
             'recall_deep_hypo': report_dict['Deep Hypo']['recall'],
             'precision_hypo': report_dict['Hypo']['precision'],
             'precision_deep_hypo': report_dict['Deep Hypo']['precision'],
-            'f1_weighted': report_dict['weighted avg']['f1-score']
+            'f1_weighted': report_dict['weighted avg']['f1-score'],
+            'mean_time_gain_min': mean_time_gain,
+            'median_time_gain_min': median_time_gain
         })
 
 
@@ -562,7 +589,7 @@ class TwoStepModelTrainer:
 
 
 
-    def run(self):
+    def run(self, use_smote=False):
         if self.df.empty or not self.feature_sets:
             print("Cannot run pipeline. Data or feature sets are missing.")
             return
@@ -576,52 +603,112 @@ class TwoStepModelTrainer:
             if not all(feat in self.df.columns for feat in feature_list):
                 print(f"Warning: Skipping feature set '{feature_set_name}' due to missing columns.")
                 continue
+            
 
-            X_train = self.train_df[feature_list]
-            y_train = self.train_df[self.classification_target].astype(int)
-            groups = self.train_df['subj_id']
+            # --- Handle NaNs for both train and test sets ---
+            # Training set
+            X_train_initial = self.train_df[feature_list]
+            y_train_initial = self.train_df[self.classification_target].astype(int)
+            # Add the required time columns for the Time Gain calculation
+            train_full = pd.concat([X_train_initial, y_train_initial, self.train_df['subj_id'], self.train_df['meal_time_start'], self.train_df['time_to_first_glucose_peak_after_meal']], axis=1)
+            initial_train_rows = len(train_full)
+            train_full.dropna(inplace=True)
+            
+            print(f"Dropped {initial_train_rows - len(train_full)} rows with NaN values from the training set.")
+            print(f"Final training set dimensions: {train_full.shape[0]} postprandial periods.")
+            print("Final class distribution in training set:")
+            print(train_full[self.classification_target].value_counts())
+
+            # Test set
+            X_test_initial = self.test_df[feature_list]
+            y_test_initial = self.test_df[self.classification_target].astype(int)
+            # Add the required time columns for the Time Gain calculation
+            test_full = pd.concat([X_test_initial, y_test_initial, self.test_df['subj_id'], self.test_df['meal_time_start'], self.test_df['time_to_first_glucose_peak_after_meal']], axis=1)
+            initial_test_rows = len(test_full)
+            test_full.dropna(inplace=True)
+            
+            print(f"\nDropped {initial_test_rows - len(test_full)} rows with NaN values from the test set.")
+            print(f"Final test set dimensions: {test_full.shape[0]} postprandial periods.")
+            print("Final class distribution in test set:")
+            print(test_full[self.classification_target].value_counts())
+
+            # Calculate and print final split percentage
+            final_train_rows = len(train_full)
+            final_test_rows = len(test_full)
+            total_rows = final_train_rows + final_test_rows
+            if total_rows > 0:
+                train_percent = (final_train_rows / total_rows) * 100
+                test_percent = (final_test_rows / total_rows) * 100
+                print(f"\nFinal data split after dropping NaNs: {train_percent:.1f}% train / {test_percent:.1f}% test")
+            
+            if final_train_rows == 0 or final_test_rows == 0:
+                print("Not enough data to train/test after dropping NaNs. Skipping feature set.")
+                continue
+
+            # Prepare final, clean data for the methods
+            X_train = train_full[feature_list]
+            y_train = train_full[self.classification_target]
+            groups = train_full['subj_id']
+            X_test = test_full[feature_list]
+            y_test = test_full[self.classification_target]
+
 
             for model_combo_name, models in model_combinations.items():
                 print(f"\n--- Testing Model Combination: {model_combo_name} ---")
                 
-                # Create separate pipelines for each stage
-                pipeline_c1 = Pipeline([
-                    ('imputer', SimpleImputer(strategy='median')),
+                # Create separate pipeline steps for each stage
+                pipeline_steps_c1 = [
+                    #('imputer', SimpleImputer(strategy='median')),
                     ('scaler', StandardScaler()),
-                    ('model', models['classifier1'])
-                ])
+                ]
                
-                pipeline_c2 = Pipeline([
-                    ('imputer', SimpleImputer(strategy='median')),
+                pipeline_steps_c2 = [
+                    #('imputer', SimpleImputer(strategy='median')),
                     ('scaler', StandardScaler()),
-                    ('model', models['classifier2'])
-                ])
+                ]
+
+                if use_smote:
+                    print(">>> SMOTE enabled for both classifier stages.")
+                    pipeline_steps_c1.insert(1, ('sampler', SMOTE(random_state=self.random_state)))
+                    pipeline_steps_c2.insert(1, ('sampler', SMOTE(random_state=self.random_state)))
+
+                pipeline_steps_c1.append(('model', models['classifier1']))
+                pipeline_steps_c2.append(('model', models['classifier2']))
+
+                pipeline_c1 = ImbPipeline(pipeline_steps_c1)
+                pipeline_c2 = ImbPipeline(pipeline_steps_c2)
 
                 # Create parameter grids with the 'model__' prefix for the pipeline
                 params1_grid = {'model__' + k: v for k, v in models['params1'].items()} 
                 params2_grid = {'model__' + k: v for k, v in models['params2'].items()}
 
-                # STAGE 1 TUNING: Pass the pipeline and the corrected grid
+                # TUNING 1: Get the FITTED pipeline for the first classifier
                 best_c1_pipeline = self._tune_classifier1(X_train, y_train, groups, pipeline_c1, params1_grid)
-   
-                # STAGE 2 TUNING: Pass the pipeline and the corrected grid
+
+                # TUNING 2: Get the FITTED pipeline for the second classifier
                 best_c2_pipeline = self._tune_classifier2(X_train, y_train, groups, pipeline_c2, params2_grid)
 
-                # Assemble the final model by extracting the best estimators from the tuned pipelines
+                # Assemble the final model by extracting the ALREADY FITTED estimators
                 best_c1 = best_c1_pipeline.named_steps['model']
                 best_c2 = best_c2_pipeline.named_steps['model']
 
-                self.best_model = Pipeline([
-                    ('imputer', SimpleImputer(strategy='median')),
-                    ('scaler', StandardScaler()),
+                # Create the final two-step model object. This object does NOT need to be fitted again.
+                # We just need it to provide a unified predict/predict_proba interface.
+                # The scaler is taken from the first pipeline for consistency.
+                self.best_model = ImbPipeline([
+                    ('scaler', best_c1_pipeline.named_steps['scaler']),
                     ('model', TwoStepClassifier(classifier1=best_c1, classifier2=best_c2))
                 ])
-               
-                # Fit the final assembled pipeline on the full (unscaled) training data
-                self.best_model.fit(X_train, y_train)
    
                 # Evaluate the final assembled model
-                self.evaluate(model_combo_name, feature_set_name, feature_list)
+                self.evaluate(X_test, y_test, test_full, model_combo_name, feature_set_name)
+        
+        # Conditionally name the log file and save the results
+        log_filename = "tuned_two_step_performance_log.csv"
+        if use_smote:
+            log_filename = "tuned_two_step_performance_log_with_smote.csv"
+        
+        self.save_results_to_csv(log_filename)
 
  
                 

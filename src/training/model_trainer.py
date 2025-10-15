@@ -33,6 +33,9 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, classification_re
 
 # Imports for Cross-Validation 
 from sklearn.model_selection import GroupKFold, cross_validate, GridSearchCV
+from sklearn.utils.class_weight import compute_sample_weight
+from imblearn.over_sampling import SMOTE 
+from imblearn.pipeline import Pipeline as ImbPipeline
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="X does not have valid feature names, but LGBMClassifier was fitted with feature names")
@@ -47,7 +50,8 @@ class ModelTrainer:
     """
     def __init__(self, data_file_path: str, features_file_path: str, analysis_type: str, 
                  classification_target: str, regression_target: str,
-                 test_size: float = 0.2, random_state: int = 42, n_splits: int = 5):
+                 test_size: float = 0.2, random_state: int = 42, n_splits: int = 5,
+                 match_models_to_sets: bool = False, use_model_specific_sets: bool = False):
         """
         Initializes the ModelTrainer.
 
@@ -80,8 +84,101 @@ class ModelTrainer:
 
 
         self.df = self._load_data()
+        
+        if self.analysis_type == 'regression':
+            initial_rows = len(self.df)
+            # Keep only rows where the regression target is greater than 0
+            self.df = self.df[self.df[self.regression_target] > 0].copy()
+            rows_dropped = initial_rows - len(self.df)
+            if rows_dropped > 0:
+                print(f"Removed {rows_dropped} row(s) with negative target values.")
+
+        self.df = self._apply_pre_split_filters(self.df) # Apply filters before splitting
         self.feature_sets = self._load_feature_sets()
+        self._display_loaded_feature_sets()
         self.results_log = []
+        self.match_models_to_sets = match_models_to_sets
+        self.use_model_specific_sets = use_model_specific_sets
+    
+    
+    
+    def _display_loaded_feature_sets(self):
+        """
+        Prints the loaded feature sets in a clear, formatted way for verification.
+        """
+        if not self.feature_sets:
+            print("\nWARNING: No feature sets were loaded for this training run.")
+            return
+
+        print("\n" + "#"*80)
+        print("### FEATURE SETS LOADED FOR THIS TRAINING RUN ###")
+        print(f"Source File: {self.features_file_path}")
+        print("#"*80)
+
+        for set_name, features in self.feature_sets.items():
+            print("\n" + "="*80)
+            print(f"--- Feature Set: '{set_name}' ---")
+            print(f"Total Features: {len(features)}")
+            print("="*80)
+            if not features:
+                print("  (No features in this set)")
+            else:
+                for i, feature in enumerate(features, 1):
+                    print(f"  {i:2d}. {feature}")
+        print("\n" + "#"*80 + "\n")
+    
+    
+    
+    def _apply_pre_split_filters(self, df):
+        """Applies the standard project filters to the dataframe before data splitting."""
+        if df.empty:
+            return df
+
+        print("\n--- Applying Pre-Split Filters to the Dataset ---")
+        initial_rows = len(df)
+
+        # Filter list
+        non_wearable_filters = [
+            {'column': 'hypo_to_check_flag', 'operator': '!=', 'value': 0},
+            {'column': 'postprandial_duration_minutes', 'operator': '>', 'value': 120},
+            {'column': 'time_peak_hypo_event', 'operator': '>', 'value': -1},
+            {'column': 'rate_of_increase', 'operator': '>', 'value': 0},
+            {'column': 'glucose_derivative_15min_before_peak1', 'operator': '>', 'value': 0},
+            {'column': 'glucose_derivative_15min_after_peak1', 'operator': '<', 'value': 0},
+        ]
+        wearable_filters = [
+            {'column': 'has_heart_rate_data', 'operator': '==', 'value': 1},
+            {'column': 'has_pulse_ox_data', 'operator': '==', 'value': 1},
+            {'column': 'has_steps_data', 'operator': '==', 'value': 1},
+        ]
+        all_filters = non_wearable_filters + wearable_filters
+
+        # Apply each filter condition
+        for condition in all_filters:
+            col = condition['column']
+            op = condition['operator']
+            val = condition['value']
+            
+            if col not in df.columns:
+                print(f"Warning: Filter column '{col}' not found. Skipping filter.")
+                continue
+
+            if op == '>': df = df[df[col] > val]
+            elif op == '<': df = df[df[col] < val]
+            elif op == '==': df = df[df[col] == val]
+            elif op == '>=': df = df[df[col] >= val]
+            elif op == '<=': df = df[df[col] <= val]
+            elif op == '!=': df = df[df[col] != val]
+
+        final_rows = len(df)
+        print(f"Filtered dataset from {initial_rows} to {final_rows} rows before splitting.")
+        
+        print("\n--- Target Class Distribution After Filtering ---")
+        if self.classification_target in df.columns:
+            print(df[self.classification_target].value_counts())
+            
+        return df
+
 
 
     def _load_data(self) -> pd.DataFrame:
@@ -176,26 +273,27 @@ class ModelTrainer:
         models = {}
         if 'classification' in self.analysis_type:
             # Common models for both classification types
-            models["Logistic Regression"] = LogisticRegression(random_state=self.random_state, max_iter=10000, class_weight='balanced') # class_weight='balanced' ---> adjusts weights inversely proportional to class frequencies to avoid biased toward the majority 
-            models["Support Vector Machine"] = SVC(random_state=self.random_state, class_weight='balanced', probability=True) # probability=True to also add output probabilities
-            models["Random Forest"] = RandomForestClassifier(random_state=self.random_state, class_weight='balanced_subsample', n_jobs=-1) # class_weight='balanced_subsample' ---> for unbalanced datasets: creates balanced class weights for each individual tree based on its bootstrap sample
-            models["LightGBM"] = LGBMClassifier(random_state=self.random_state, class_weight='balanced',n_jobs=-1, verbose=-1) # verbose=-1 ---> to silence the prints in the console
-            
+            models["LogisticRegression"] = LogisticRegression(random_state=self.random_state, max_iter=10000, class_weight='balanced')
+            models["SVC"] = SVC(random_state=self.random_state, class_weight='balanced', probability=True)
+            models["RandomForest"] = RandomForestClassifier(random_state=self.random_state, class_weight='balanced_subsample', n_jobs=-1)
+            models["LightGBM"] = LGBMClassifier(random_state=self.random_state, class_weight='balanced', n_jobs=-1, verbose=-1)
+              
             # Specific model parameters
             if self.analysis_type == 'binary_classification':
-                models["XGBoost"] = XGBClassifier(random_state=self.random_state, eval_metric='logloss', n_jobs=-1) # eval_metric='logloss' ---> logarithmic loss (evaluation metric used for the training)
+                imbalance_ratio = 5.9
+                models["XGBoost"] = XGBClassifier(random_state=self.random_state, eval_metric='logloss', n_jobs=-1, scale_pos_weight=imbalance_ratio)
             elif self.analysis_type == 'multi_class_classification':
                 models["XGBoost"] = XGBClassifier(random_state=self.random_state, eval_metric='mlogloss', n_jobs=-1)
-                
+               
             # ADD NEW CLASSIFICATION MODELS HERE
         
         elif self.analysis_type == 'regression':
-            models["Ridge Regression"] = Ridge(random_state=self.random_state)
-            models["Lasso Regression"] = Lasso(random_state=self.random_state, max_iter=5000)
-            models["Support Vector Regressor"] = SVR()
-            models["Random Forest Regressor"] = RandomForestRegressor(random_state=self.random_state, n_jobs=-1)
-            models["XGBoost Regressor"] = XGBRegressor(random_state=self.random_state, n_jobs=-1)
-            models["LightGBM Regressor"] = LGBMRegressor(random_state=self.random_state, n_jobs=-1, verbose=-1)
+            models["Ridge"] = Ridge(random_state=self.random_state)
+            models["Lasso"] = Lasso(random_state=self.random_state, max_iter=5000)
+            models["SVR"] = SVR()
+            models["RandomForest"] = RandomForestRegressor(random_state=self.random_state, n_jobs=-1)
+            models["XGBoost"] = XGBRegressor(random_state=self.random_state, n_jobs=-1)
+            models["LightGBM"] = LGBMRegressor(random_state=self.random_state, n_jobs=-1, verbose=-1)
             
             # ADD NEW REGRESSION MODELS HERE
     
@@ -365,18 +463,18 @@ class ModelTrainer:
     
     
     
-    def _evaluate_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba):
+    def _evaluate_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba, test_df_full):
         """Dispatcher function that calls the appropriate evaluation method."""
         if self.analysis_type == 'binary_classification':
             # For binary, we need the probability of the positive class (class 1)
-            return self._evaluate_binary_classification(model_name, best_params, y_true, y_pred, y_pred_proba[:, 1])
+            return self._evaluate_binary_classification(model_name, best_params, y_true, y_pred, y_pred_proba[:, 1], test_df_full)
         elif self.analysis_type == 'multi_class_classification':
             # For multi-class, we need the full probability matrix
-            return self._evaluate_multi_class_classification(model_name, best_params, y_true, y_pred, y_pred_proba)
+            return self._evaluate_multi_class_classification(model_name, best_params, y_true, y_pred, y_pred_proba, test_df_full)
 
     
     
-    def _evaluate_binary_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba):
+    def _evaluate_binary_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba, test_df_full):
         """Calculates and prints a comprehensive set of classification metrics."""
         print(f"\n--- Evaluation Metrics for: {model_name} (Binary) ---")
 
@@ -427,11 +525,46 @@ class ModelTrainer:
             'auc_roc': roc_auc_score(y_true, y_pred_proba),
             'auc_pr': average_precision_score(y_true, y_pred_proba)
         }
+        
+        # --- Time Gain Calculation (for True Positives) ---
+        true_positives_mask = (y_true.values > 0) & (y_pred > 0)
+        metrics['mean_time_gain_min'] = np.nan
+        metrics['median_time_gain_min'] = np.nan
+        
+        print("\n--- Time Gain Analysis (for True Positives) ---")
+        if np.any(true_positives_mask):
+            # The test_df_full passed to this function now correctly contains all time columns.
+            tp_df = test_df_full.loc[true_positives_mask].copy()
+
+            # Merge the hypo time back in using the original index
+            hypo_time_series = self.df['postprandial_hypo_time']
+            tp_df = tp_df.merge(hypo_time_series, left_index=True, right_index=True, how='left')
+          
+            # Ensure time columns are in datetime format
+            tp_df['meal_time_start'] = pd.to_datetime(tp_df['meal_time_start'])
+            tp_df['postprandial_hypo_time'] = pd.to_datetime(tp_df['postprandial_hypo_time'])
+            
+            prediction_time = tp_df['meal_time_start'] + pd.to_timedelta(tp_df['time_to_first_glucose_peak_after_meal'] + 15, unit='m')
+            time_gain = (tp_df['postprandial_hypo_time'] - prediction_time).dt.total_seconds() / 60
+            time_gain = time_gain[time_gain > 0] # keep only valid results
+            
+            if not time_gain.empty:
+                print(f"Number of useful predictions (TPs made before event): {len(time_gain)} / {true_positives_mask.sum()}")
+                print(f"Average Time Gain: {time_gain.mean():.1f} minutes")
+                print(f"Median Time Gain:  {time_gain.median():.1f} minutes")
+                print(f"Std Dev of Gain:   {time_gain.std():.1f} minutes")
+                print(f"Min / Max Gain:    {time_gain.min():.1f} min / {time_gain.max():.1f} min")
+                metrics['mean_time_gain_min'] = time_gain.mean()
+                metrics['median_time_gain_min'] = time_gain.median()
+            else:
+                 print("No true positive predictions were made before the event occurred.")
+        else:
+            print("No True Positives to analyze.")
         return metrics
     
     
     
-    def _evaluate_multi_class_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba):
+    def _evaluate_multi_class_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba, test_df_full):
         """Calculates and prints multi-class classification metrics."""
         print(f"\n--- Evaluation Metrics for: {model_name} (Multi-Class) ---")
         class_labels = ['No Hypo', 'Hypo', 'Deep Hypo']
@@ -459,7 +592,11 @@ class ModelTrainer:
             specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
             specificities[class_labels[i]] = specificity
 
-        roc_auc = roc_auc_score(y_true, y_pred_proba, multi_class='ovr', average='weighted')
+        try:
+            roc_auc = roc_auc_score(y_true, y_pred_proba, multi_class='ovr', average='weighted')
+        except ValueError as e:
+            print(f"Warning: Could not calculate ROC AUC score. This often happens if not all classes are present in the training data. Error: {e}")
+            roc_auc = np.nan # Assign NaN if calculation fails
 
         print(f"Accuracy (Overall):        {accuracy:.4f}")
         print(f"Precision (Weighted):      {precision:.4f}")
@@ -481,11 +618,55 @@ class ModelTrainer:
             'roc_auc_ovr_weighted': roc_auc, 'specificity_no_hypo': specificities.get('No Hypo', 0),
             'specificity_hypo': specificities.get('Hypo', 0), 'specificity_deep_hypo': specificities.get('Deep Hypo', 0)
         }
+        
+        # --- Time Gain Calculation (for True Positives) ---
+        true_positives_mask = (y_true.values > 0) & (y_pred > 0)
+        metrics['mean_time_gain_min'] = np.nan
+        metrics['median_time_gain_min'] = np.nan
+
+        print("\n--- Time Gain Analysis (for True Positives) ---")
+        if np.any(true_positives_mask):
+            tp_df = test_df_full.loc[true_positives_mask].copy() # select only the true positive rows in the dataset
+            
+            # Merge the necessary time columns from the original dataframe
+            time_columns = ['postprandial_hypo_time', 'postprandial_deep_hypo_time']
+            tp_df = tp_df.merge(self.df[time_columns], left_index=True, right_index=True, how='left')
+            
+            # Create a single 'event_time' column
+            # Use postprandial_deep_hypo_time for class 2, otherwise use postprandial_hypo_time
+            tp_df['event_time'] = np.where(
+                tp_df[self.classification_target] == 2, 
+                tp_df['postprandial_deep_hypo_time'], 
+                tp_df['postprandial_hypo_time']
+            )
+
+            # Convert all time columns to datetime objects
+            tp_df['meal_time_start'] = pd.to_datetime(tp_df['meal_time_start'])
+            tp_df['event_time'] = pd.to_datetime(tp_df['event_time'])
+
+            # Calculate prediction time and time gain
+            prediction_time = tp_df['meal_time_start'] + pd.to_timedelta(tp_df['time_to_first_glucose_peak_after_meal'] + 15, unit='m')
+            time_gain = (tp_df['event_time'] - prediction_time).dt.total_seconds() / 60
+            time_gain = time_gain[time_gain > 0] # keep only valid results
+
+            if not time_gain.empty:
+                print(f"Number of useful predictions (TPs made before event): {len(time_gain)} / {true_positives_mask.sum()}")
+                print(f"Average Time Gain: {time_gain.mean():.1f} minutes")
+                print(f"Median Time Gain:  {time_gain.median():.1f} minutes")
+                print(f"Std Dev of Gain:   {time_gain.std():.1f} minutes")
+                print(f"Min / Max Gain:    {time_gain.min():.1f} min / {time_gain.max():.1f} min")
+                metrics['mean_time_gain_min'] = time_gain.mean()
+                metrics['median_time_gain_min'] = time_gain.median()
+            else:
+                 print("No true positive predictions were made before the event occurred.")
+        else:
+            print("No True Positives to analyze.")
+
         return metrics
     
     
     
-    def _evaluate_regression(self, model_name: str, best_params, y_true, y_pred):
+    def _evaluate_regression(self, model_name: str, best_params, y_true, y_pred, test_df_full):
         """Calculates and prints a comprehensive set of regression metrics."""
         print(f"\n--- Final Evaluation on Test Set: {model_name} ---")
         print(f"Best Parameters Found: {best_params}")
@@ -507,6 +688,46 @@ class ModelTrainer:
             'rmse': rmse,
             'r2': r2
         }
+        
+        # --- Prediction Horizon Analysis ---
+        metrics['mean_prediction_horizon'] = np.nan
+        metrics['median_prediction_horizon'] = np.nan
+        print("\n--- Prediction Horizon Analysis (for true hypo events) ---")
+        
+        # We need the classification target to identify true hypo events
+        # We use the original dataframe's index to ensure alignment
+        hypo_mask = (self.df.loc[y_true.index, self.classification_target] > 0)
+        
+        if hypo_mask.any():
+            analysis_df = test_df_full.loc[hypo_mask].copy()
+            
+            # Merge the hypo time back in
+            hypo_time_series = self.df['postprandial_hypo_time']
+            analysis_df = analysis_df.merge(hypo_time_series, left_index=True, right_index=True, how='left')
+            
+            analysis_df['meal_time_start'] = pd.to_datetime(analysis_df['meal_time_start'])
+            analysis_df['postprandial_hypo_time'] = pd.to_datetime(analysis_df['postprandial_hypo_time'])
+
+            # Calculate Prediction Horizon 
+            prediction_time = analysis_df['meal_time_start'] + pd.to_timedelta(analysis_df['time_to_first_glucose_peak_after_meal'] + 15, unit='m')
+            prediction_horizon = (analysis_df['postprandial_hypo_time'] - prediction_time).dt.total_seconds() / 60
+            
+            # Filter for positive horizons and drop any resulting NaNs
+            prediction_horizon = prediction_horizon[prediction_horizon > 0].dropna()
+            
+            if not prediction_horizon.empty:
+                print(f"Number of hypo events with valid horizon: {len(prediction_horizon)}")
+                print(f"Average Prediction Horizon: {prediction_horizon.mean():.1f} minutes")
+                print(f"Median Prediction Horizon:  {prediction_horizon.median():.1f} minutes")
+                print(f"Std Dev of Horizon:       {prediction_horizon.std():.1f} minutes")
+                print(f"Min / Max Horizon:        {prediction_horizon.min():.1f} min / {prediction_horizon.max():.1f} min")
+                metrics['mean_prediction_horizon'] = prediction_horizon.mean()
+                metrics['median_prediction_horizon'] = prediction_horizon.median()
+            else:
+                print("No valid prediction horizons could be calculated.")
+        else:
+            print("No true hypo events in test set to analyze.")
+            
         return metrics
     
     
@@ -522,18 +743,18 @@ class ModelTrainer:
         if self.analysis_type == 'binary_classification':
             column_order = [
                 'feature_set', 'model', 'auc_roc', 'recall', 'precision', 'specificity', 
-                'f1_score', 'mcc', 'accuracy', 'auc_pr', 'best_params'
+                'f1_score', 'mcc', 'accuracy', 'auc_pr', 'mean_time_gain_min', 'median_time_gain_min', 'best_params'
             ]
             sort_by_col = 'auc_roc'
         elif self.analysis_type == 'multi_class_classification':
             column_order = [
                 'feature_set', 'model', 'roc_auc_ovr_weighted', 'recall_weighted', 'precision_weighted', 
-                'f1_weighted', 'mcc', 'accuracy', 'specificity_no_hypo', 'specificity_hypo', 
-                'specificity_deep_hypo', 'best_params'
+                'f1_weighted', 'mcc', 'accuracy', 'mean_time_gain_min', 'median_time_gain_min', 
+                'specificity_no_hypo', 'specificity_hypo', 'specificity_deep_hypo', 'best_params'
             ]
             sort_by_col = 'roc_auc_ovr_weighted'
         else: # Regression
-            column_order = ['feature_set', 'model', 'r2', 'mae', 'rmse', 'best_params']
+            column_order = ['feature_set', 'model', 'r2', 'mae', 'rmse', 'mean_prediction_horizon', 'median_prediction_horizon', 'best_params']
             sort_by_col = 'r2'
 
         # Use only the columns that actually exist in the current results DataFrame
@@ -549,10 +770,10 @@ class ModelTrainer:
             print(f"\nSuccessfully saved model performance summary to: {path}")
         except Exception as e:
             print(f"\nError saving results to CSV: {e}")
-
-      
-
-    def train(self):
+    
+    
+    
+    def train(self, use_smote=False):
         """
         Main orchestration method for the training pipeline.
         """
@@ -580,31 +801,68 @@ class ModelTrainer:
                 print("Feature list is empty, skipping.")
                 continue
             
+            
+            # Define X and y, and then drop rows with any NaN values 
             X_train_initial = self.train_df[feature_list]
             X_test_initial = self.test_df[feature_list]
-            
-            if self.analysis_type == 'binary_classification':
-                print("Preparing target for BINARY classification.")
-                y_train_initial = self.train_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
-                y_test_initial = self.test_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
-            elif self.analysis_type == 'multi_class_classification':
-                print("Preparing target for MULTI-CLASS classification.")
-                y_train_initial = self.train_df[self.classification_target]
-                y_test_initial = self.test_df[self.classification_target]
-            else: # Regression
-                y_train_initial = self.train_df[self.regression_target]
-                y_test_initial = self.test_df[self.regression_target]
 
-            # Drop rows where the target is NaN from ALL datasets (X, y, and groups)
-            train_full = pd.concat([X_train_initial, y_train_initial, self.train_df['subj_id']], axis=1).dropna(subset=[y_train_initial.name])
+            if 'classification' in self.analysis_type:
+                target_name = self.classification_target
+                if self.analysis_type == 'binary_classification':
+                    y_train_initial = self.train_df[target_name].apply(lambda x: 1 if x > 0 else 0)
+                    y_test_initial = self.test_df[target_name].apply(lambda x: 1 if x > 0 else 0)
+                else: # multi-class
+                    y_train_initial = self.train_df[target_name]
+                    y_test_initial = self.test_df[target_name]
+            else: # regression
+                target_name = self.regression_target
+                y_train_initial = self.train_df[target_name]
+                y_test_initial = self.test_df[target_name]
+            
+            # Combine training data to drop NaNs consistently
+            train_full = pd.concat([X_train_initial, y_train_initial, self.train_df['subj_id'], self.train_df['meal_time_start'], self.train_df['time_to_first_glucose_peak_after_meal']], axis=1)            
+            if not self.use_model_specific_sets:
+                initial_train_rows = len(train_full)
+                train_full.dropna(inplace=True)
+                print(f"Dropped {initial_train_rows - len(train_full)} rows with NaN values from the training set.")
+            
+            print(f"Final training set dimensions: {train_full.shape[0]} postprandial periods.")
+            print("Final class distribution in training set:")
+            print(train_full[y_train_initial.name].value_counts())
+            
             X_train = train_full[feature_list]
             y_train = train_full[y_train_initial.name]
-            groups = train_full['subj_id'] # CORRECT groups are defined here
+            groups = train_full['subj_id']
 
-            # Also filter the test set for consistency in evaluation
-            test_full = pd.concat([X_test_initial, y_test_initial], axis=1).dropna(subset=[y_test_initial.name])
+            # Combine test data to drop NaNs consistently
+            test_full = pd.concat([X_test_initial, y_test_initial, self.test_df['subj_id'], self.test_df['meal_time_start'], self.test_df['time_to_first_glucose_peak_after_meal']], axis=1)
+            if not self.use_model_specific_sets:
+                initial_test_rows = len(test_full)
+                test_full.dropna(inplace=True)
+                print(f"Dropped {initial_test_rows - len(test_full)} rows with NaN values from the test set.")
+            
+            print(f"Final test set dimensions: {test_full.shape[0]} postprandial periods.")
+            print("Final class distribution in test set:")
+            print(test_full[y_test_initial.name].value_counts())
+            
             X_test = test_full[feature_list]
             y_test = test_full[y_test_initial.name]
+            
+            
+            # --- Calculate and print the final split percentage ---
+            final_train_rows = len(train_full)
+            final_test_rows = len(test_full)
+            total_rows = final_train_rows + final_test_rows
+            if total_rows > 0:
+                train_percent = (final_train_rows / total_rows) * 100
+                test_percent = (final_test_rows / total_rows) * 100
+                print(f"\nFinal data split after dropping NaNs: {train_percent:.1f}% train / {test_percent:.1f}% test")
+                
+            
+            if len(X_train) == 0 or len(X_test) == 0:
+                print("Not enough data to train/test after dropping NaNs. Skipping feature set.")
+                continue
+            
 
             # Block to automatically update the XGBoost grid
             if self.analysis_type == 'binary_classification' and "XGBoost" in param_grids:
@@ -616,37 +874,95 @@ class ModelTrainer:
                 
 
             for model_name, model in models_to_train.items():
+                
+                if self.match_models_to_sets:
+                    # Check if the model's name is part of the feature set's name
+                    if model_name not in feature_set_name:
+                        continue # Skip to the next model if it doesn't match
+                    
                 print(f"\n>>> Training Model: {model_name}...")
 
                 # Create a pipeline to handle missing values, scale data, and train the model
                 # Use pipline so that one object handles everything
-                pipeline = Pipeline([ # Pipeline to chain multiple preprocessing steps and a model them into one unified workflow
-                    ('imputer', SimpleImputer(strategy='median')), # Fills missing value ---> SimpleImputer(strategy='median') replaces missing values in each feature column with the median of that column
-                    ('scaler', StandardScaler()),                  # Scales features
-                    ('model', model)                               # The actual model ---> training and prediction automatically include preprocessing
-                ])
-                
-                param_grid = param_grids.get(model_name)
-                if not param_grid:
-                    print(f"No parameter grid found for {model_name}. Skipping tuning.")
-                    continue
+                # Create the base pipeline steps
+                # --- Build the Pipeline Dynamically ---
+                pipeline_steps = []
 
-                # TUNING AND TRAINING
-                cv = GroupKFold(n_splits=self.n_splits) # no subject used for the training are in the test set ---> no data leakage
+                # 1. Add imputer if required
+                if self.use_model_specific_sets:
+                    print(">>> Imputing NaN values with median for model-specific feature set.")
+                    pipeline_steps.append(('imputer', SimpleImputer(strategy='median')))
+
+                # 2. Always add the scaler
+                pipeline_steps.append(('scaler', StandardScaler()))
+
+                # 3. Add SMOTE sampler if required (for classification)
+                if use_smote and 'classification' in self.analysis_type:
+                    print(">>> SMOTE is enabled for this training run.")
+                    pipeline_steps.append(('sampler', SMOTE(random_state=self.random_state)))
                 
-                # 1. Tune the model to find the best hyperparameters
-                best_pipeline, tuning_results = self._perform_grid_search(pipeline, param_grid, X_train, y_train, cv, groups)
+                # 4. Always add the model as the final step
+                pipeline_steps.append(('model', model))
                 
-                # Save the detailed tuning results for this model
-                tuning_filename = f"tuning_results_{model_name.replace(' ', '')}_{feature_set_name}.csv"
-                try:
-                    db_directory = os.path.dirname(self.data_file_path) 
-                    path = os.path.join(db_directory, 'tuning_logs', tuning_filename) 
-                    os.makedirs(os.path.dirname(path), exist_ok=True)
-                    tuning_results.to_csv(path, index=False)
-                    print(f"Saved detailed tuning results to: {path}")
-                except Exception as e:
-                    print(f"Error saving tuning results: {e}")
+                # Use the special pipeline from imblearn to handle the sampler correctly
+                pipeline = ImbPipeline(pipeline_steps)                
+                
+                
+                # --- CHANGES START ---
+                
+                # --- TRAIN ON FULL TRAINING SET (SKIPPING TUNING) ---
+                print("Skipping GridSearchCV. Training model with default parameters.")
+                
+                # Initialize sample_weights as None for multi_class classification
+                sample_weights = None
+            
+                # Check if we are running multi-class classification for XGBoost
+                if self.analysis_type == 'multi_class_classification' and model_name == 'XGBoost':
+                    print("Calculating sample weights for multi-class XGBoost...")
+                
+                    # This automatically calculates a weight for each individual sample in y_train
+                    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
+            
+                # Conditionally pass the weights to the fit method
+                if sample_weights is not None:
+                    # The parameter must be prefixed with the pipeline step name ('model')
+                    pipeline.fit(X_train, y_train, model__sample_weight=sample_weights)
+                else:
+                    # Fit normally for all other models
+                    pipeline.fit(X_train, y_train)
+                
+                best_pipeline = pipeline
+                best_params = 'default' # Placeholder for logging
+                
+                
+                
+                
+                # TUNING & CV TO COMMENT OUT FOR NOW
+                # param_grid = param_grids.get(model_name)
+                # if not param_grid:
+                #     print(f"No parameter grid found for {model_name}. Skipping tuning.")
+                #     continue
+
+                # # TUNING AND TRAINING
+                # cv = GroupKFold(n_splits=self.n_splits) # no subject used for the training are in the test set ---> no data leakage
+                
+                # # 1. Tune the model to find the best hyperparameters
+                # best_pipeline, tuning_results = self._perform_grid_search(pipeline, param_grid, X_train, y_train, cv, groups)
+                
+                # # Save the detailed tuning results for this model
+                # tuning_filename = f"tuning_results_{model_name.replace(' ', '')}_{feature_set_name}.csv"
+                # try:
+                #     db_directory = os.path.dirname(self.data_file_path) 
+                #     path = os.path.join(db_directory, 'tuning_logs', tuning_filename) 
+                #     os.makedirs(os.path.dirname(path), exist_ok=True)
+                #     tuning_results.to_csv(path, index=False)
+                #     print(f"Saved detailed tuning results to: {path}")
+                # except Exception as e:
+                #     print(f"Error saving tuning results: {e}")
+                
+                # --- CHANGES FINISH ---
+                
+                
                 
                 # 2. Use the best found model for final evaluation on the test set
                 y_pred = best_pipeline.predict(X_test)
@@ -654,13 +970,19 @@ class ModelTrainer:
                 # Call the correct evaluation function 
                 if 'classification' in self.analysis_type:
                     y_pred_proba = best_pipeline.predict_proba(X_test) 
-                    results = self._evaluate_classification(model_name, best_pipeline.get_params()['model'], y_test, y_pred, y_pred_proba)
+                    results = self._evaluate_classification(model_name, best_pipeline.get_params()['model'], y_test, y_pred, y_pred_proba, test_full)
                 else: # Regression
-                    results = self._evaluate_regression(model_name, best_pipeline.get_params()['model'], y_test, y_pred)
+                    results = self._evaluate_regression(model_name, best_pipeline.get_params()['model'], y_test, y_pred, test_full)
                      
                 # 3. Log the results of the tested models
                 results['feature_set'] = feature_set_name # Add feature set info
                 self.results_log.append(results)
+        
+        log_filename = f"{self.analysis_type}_performance_log.csv"
+        if use_smote:
+            log_filename = f"{self.analysis_type}_performance_log_with_smote.csv"
+
+        self.save_results_to_csv(log_filename)
 
         print("\nModel training pipeline finished.")
 
@@ -687,4 +1009,4 @@ if __name__ == '__main__':
         classification_target='target_hypoglycemia',
         regression_target='postprandial_glucose_min'
     )
-    trainer.train()
+    trainer.train(use_smote=True)

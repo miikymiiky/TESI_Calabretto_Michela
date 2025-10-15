@@ -12,6 +12,8 @@ import os
 import json
 import random
 from sklearn.model_selection import GroupKFold, GridSearchCV
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as ImbPipeline
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
 from sklearn.preprocessing import StandardScaler
@@ -42,11 +44,101 @@ class HybridModelTrainer:
         self.n_splits = n_splits
         
         self.df = self._load_data()
+        
+        initial_rows = len(self.df)
+        # Keep only rows where the regression target is greater than 0
+        self.df = self.df[self.df[self.regression_target] > 0].copy()
+        rows_dropped = initial_rows - len(self.df)
+        if rows_dropped > 0:
+            print(f"Removed {rows_dropped} row(s) with negative target values.")
+                
+        self.df = self._apply_pre_split_filters(self.df) # Apply filters before splitting
         self.feature_sets = self._load_feature_sets()
+        self._display_loaded_feature_sets()
         
         self.best_classifier = None
         self.best_regressor = None
         self.results_log = []
+    
+    
+    
+    
+    def _display_loaded_feature_sets(self):
+        """
+        Prints the loaded feature sets in a clear, formatted way for verification.
+        """
+        if not self.feature_sets:
+            print("\nWARNING: No feature sets were loaded for this training run.")
+            return
+
+        print("\n" + "#"*80)
+        print("### FEATURE SETS LOADED FOR THIS TRAINING RUN ###")
+        print(f"Source File: {self.features_file_path}")
+        print("#"*80)
+
+        for set_name, features in self.feature_sets.items():
+            print("\n" + "="*80)
+            print(f"--- Feature Set: '{set_name}' ---")
+            print(f"Total Features: {len(features)}")
+            print("="*80)
+            if not features:
+                print("  (No features in this set)")
+            else:
+                for i, feature in enumerate(features, 1):
+                    print(f"  {i:2d}. {feature}")
+        print("\n" + "#"*80 + "\n")
+    
+    
+    
+    def _apply_pre_split_filters(self, df):
+        """Applies the standard project filters to the dataframe before data splitting."""
+        if df.empty:
+            return df
+
+        print("\n--- Applying Pre-Split Filters to the Dataset ---")
+        initial_rows = len(df)
+
+        # These filters are copied from main.py to ensure consistency
+        non_wearable_filters = [
+            {'column': 'hypo_to_check_flag', 'operator': '!=', 'value': 0},
+            {'column': 'postprandial_duration_minutes', 'operator': '>', 'value': 120},
+            {'column': 'time_peak_hypo_event', 'operator': '>', 'value': -1},
+            {'column': 'rate_of_increase', 'operator': '>', 'value': 0},
+            {'column': 'glucose_derivative_15min_before_peak1', 'operator': '>', 'value': 0},
+            {'column': 'glucose_derivative_15min_after_peak1', 'operator': '<', 'value': 0},
+        ]
+        wearable_filters = [
+            {'column': 'has_heart_rate_data', 'operator': '==', 'value': 1},
+            {'column': 'has_pulse_ox_data', 'operator': '==', 'value': 1},
+            {'column': 'has_steps_data', 'operator': '==', 'value': 1},
+        ]
+        all_filters = non_wearable_filters + wearable_filters
+
+        # Apply each filter condition
+        for condition in all_filters:
+            col = condition['column']
+            op = condition['operator']
+            val = condition['value']
+            
+            if col not in df.columns:
+                print(f"Warning: Filter column '{col}' not found. Skipping filter.")
+                continue
+
+            if op == '>': df = df[df[col] > val]
+            elif op == '<': df = df[df[col] < val]
+            elif op == '==': df = df[df[col] == val]
+            elif op == '>=': df = df[df[col] >= val]
+            elif op == '<=': df = df[df[col] <= val]
+            elif op == '!=': df = df[df[col] != val]
+
+        final_rows = len(df)
+        print(f"Filtered dataset from {initial_rows} to {final_rows} rows before splitting.")
+        
+        print("\n--- Target Class Distribution After Filtering ---")
+        if self.classification_target in df.columns:
+            print(df[self.classification_target].value_counts())
+            
+        return df
 
 
 
@@ -57,7 +149,7 @@ class HybridModelTrainer:
         """
         return {
             "XGB_Classifier_LGBM_Regressor": {
-                "classifier": XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
+                "classifier": XGBClassifier(random_state=self.random_state, eval_metric='logloss', scale_pos_weight=5.0),
                 "classifier_params": {
                     'model__n_estimators': [100, 200, 300], 
                     'model__max_depth': [3, 5, 7], 
@@ -72,7 +164,7 @@ class HybridModelTrainer:
                 }
             },
             "XGB_Classifier_XGB_Regressor": {
-                "classifier": XGBClassifier(random_state=self.random_state, eval_metric='logloss'),
+                "classifier": XGBClassifier(random_state=self.random_state, eval_metric='logloss', scale_pos_weight=5.0),
                 "classifier_params": {
                     'model__n_estimators': [100, 200, 300], 
                     'model__max_depth': [3, 5, 7], 
@@ -205,53 +297,79 @@ class HybridModelTrainer:
 
 
 
-    def train_and_tune(self, feature_list: list, classifier_model, classifier_params, regressor_model, regressor_params):
-        """Tunes and trains both stages of the hybrid model."""
+    def train_and_tune(self, X_train, y_class_train, y_reg_train, groups, feature_list, classifier_model, classifier_params, regressor_model, regressor_params, use_smote=False):
+        """Tunes and trains both stages of the hybrid model on pre-cleaned data."""
         print("\n--- Tuning and Training Hybrid Model ---")
-        
-        y_class_train = self.train_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0) # Fusion of class 1 and 2 into the same class 1
-        X_train = self.train_df[feature_list] # selection of the features to use for prediction
-        groups = self.train_df['subj_id']
 
-        classifier_pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
+        classifier_pipeline_steps = [
+            # ('imputer', SimpleImputer(strategy='median')),
             ('scaler', StandardScaler()),
-            ('model', classifier_model)
-        ])
-        
-        print("\n>>> Tuning Classifier <<<")
-        self.best_classifier = self._perform_grid_search(
-            pipeline=classifier_pipeline, param_grid=classifier_params, X_train=X_train,
-            y_train=y_class_train, groups=groups, scoring=['roc_auc', 'recall', 'average_precision'],
-            refit_metric='recall'
-            #refit_metric='roc_auc'
-        )
-        
-        # Select only the Hypo events to train the regressor
-        hypo_events_mask = self.train_df[self.classification_target] > 0
-        train_df_hypo_only = self.train_df[hypo_events_mask]
+        ]
 
-        if train_df_hypo_only.empty:
-            print("Warning: No hypoglycemic events in training set. Regressor cannot be trained.")
+        if use_smote:
+            print(">>> SMOTE enabled for the classifier stage.")
+            classifier_pipeline_steps.insert(1, ('sampler', SMOTE(random_state=self.random_state)))
+        
+        classifier_pipeline_steps.append(('model', classifier_model))
+        
+        classifier_pipeline = ImbPipeline(classifier_pipeline_steps)
+        
+        
+        # --- CHANGES START ---
+        
+        print("\n>>> Fitting Classifier on full training data <<<")
+        self.best_classifier = classifier_pipeline.fit(X_train, y_class_train)
+        
+        
+        
+        # TUNING & CV TO COMMENT OUT FOR NOW
+        # print("\n>>> Tuning Classifier <<<")
+        # self.best_classifier = self._perform_grid_search(
+        #     pipeline=classifier_pipeline, param_grid=classifier_params, X_train=X_train,
+        #     y_train=y_class_train, groups=groups, scoring=['roc_auc', 'recall', 'average_precision'],
+        #     refit_metric='recall'
+        #     #refit_metric='roc_auc'
+        # )
+        
+        # --- CHANGES FINISH ---
+        
+        
+        
+        # Select only the Hypo events from the already cleaned data to train the regressor
+        hypo_events_mask = y_class_train > 0
+        if not hypo_events_mask.any():
+            print("Warning: No hypoglycemic events in the cleaned training set. Regressor cannot be trained.")
             self.best_regressor = None
             return
 
-        y_reg_train = train_df_hypo_only[self.regression_target]
-        X_reg_train = train_df_hypo_only[feature_list]
-        groups_reg = train_df_hypo_only['subj_id']
+        y_reg_train_hypo = y_reg_train[hypo_events_mask]
+        X_reg_train_hypo = X_train[hypo_events_mask]
+        groups_reg = groups[hypo_events_mask]
 
         regressor_pipeline = Pipeline([
-            ('imputer', SimpleImputer(strategy='median')),
+            # ('imputer', SimpleImputer(strategy='median')),
             ('scaler', StandardScaler()),
             ('model', regressor_model)
         ])
         
-        print("\n>>> Tuning Regressor <<<")
-        self.best_regressor = self._perform_grid_search(
-            pipeline=regressor_pipeline, param_grid=regressor_params, X_train=X_reg_train,
-            y_train=y_reg_train, groups=groups_reg, scoring=['r2', 'neg_mean_absolute_error'],
-            refit_metric='r2'
-        )
+        
+        
+        # --- CHANGES START ---
+        
+        print("\n>>> Fitting Regressor on hypo-only training data <<<")
+        self.best_regressor = regressor_pipeline.fit(X_reg_train_hypo, y_reg_train_hypo)
+
+
+
+        # TUNING & CV TO COMMENT OUT FOR NOW
+        # print("\n>>> Tuning Regressor <<<")
+        # self.best_regressor = self._perform_grid_search(
+        #     pipeline=regressor_pipeline, param_grid=regressor_params, X_train=X_reg_train,
+        #     y_train=y_reg_train, groups=groups_reg, scoring=['r2', 'neg_mean_absolute_error'],
+        #     refit_metric='r2'
+        # )
+        
+        # --- CHANGES FINISH
 
 
 
@@ -270,14 +388,12 @@ class HybridModelTrainer:
 
 
 
-    def evaluate(self, feature_set_name: str, feature_list: list, model_combo_name: str):
-        """Evaluates both parts of the model on the held-out test set."""
+    def evaluate(self, X_test, y_class_true, y_reg_true, test_df_full, feature_set_name: str, model_combo_name: str):
+        """Evaluates both parts of the model on the pre-cleaned test set."""
         print(f"\n--- Evaluating Hybrid Model on Test Set ({model_combo_name}) ---")
-        X_test = self.test_df[feature_list]
         
         # 1. Component Evaluation (Separate) 
         # Classifier
-        y_class_true = self.test_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
         y_class_pred = self.best_classifier.predict(X_test)
         y_class_proba = self.best_classifier.predict_proba(X_test)[:, 1]
         class_auc = roc_auc_score(y_class_true, y_class_proba)
@@ -287,36 +403,85 @@ class HybridModelTrainer:
         print(f"Classifier AUC-ROC: {class_auc:.4f}")
         print(classification_report(y_class_true, y_class_pred, target_names=['No Hypo', 'Hypo'], zero_division=0))
         
+        # Time Gain Calculation
+        true_positives_mask = (y_class_true.values > 0) & (y_class_pred > 0)
+        mean_time_gain, median_time_gain = np.nan, np.nan
+        print("\n--- Time Gain Analysis (for True Positives) ---")
+        if np.any(true_positives_mask):
+            tp_df = test_df_full.loc[true_positives_mask].copy()
+            
+            # Merge the hypo time back in using the original index
+            hypo_time_series = self.df['postprandial_hypo_time']
+            tp_df = tp_df.merge(hypo_time_series, left_index=True, right_index=True, how='left')
+          
+            tp_df['meal_time_start'] = pd.to_datetime(tp_df['meal_time_start'])
+            tp_df['postprandial_hypo_time'] = pd.to_datetime(tp_df['postprandial_hypo_time'])
+            
+            prediction_time = tp_df['meal_time_start'] + pd.to_timedelta(tp_df['time_to_first_glucose_peak_after_meal'] + 15, unit='m')
+            time_gain = (tp_df['postprandial_hypo_time'] - prediction_time).dt.total_seconds() / 60
+            time_gain = time_gain[time_gain > 0]
+            
+            if not time_gain.empty:
+                mean_time_gain = time_gain.mean()
+                median_time_gain = time_gain.median()
+                print(f"Number of useful predictions (TPs made before event): {len(time_gain)} / {true_positives_mask.sum()}")
+                print(f"Average Time Gain: {mean_time_gain:.1f} minutes")
+                print(f"Median Time Gain:  {median_time_gain:.1f} minutes")
+            else:
+                print("No true positive predictions were made before the event occurred.")
+        else:
+            print("No True Positives to analyze.")
+            
         # Regressor
-        hypo_events_mask_test = self.test_df[self.classification_target] > 0
-        test_df_hypo_only = self.test_df[hypo_events_mask_test]
+        hypo_events_mask_test = y_class_true > 0
         
         reg_mae, reg_r2 = np.nan, np.nan
-        if self.best_regressor and not test_df_hypo_only.empty:
-            y_reg_true = test_df_hypo_only[self.regression_target]
-            X_reg_test = test_df_hypo_only[feature_list]
-            y_reg_pred = self.best_regressor.predict(X_reg_test)
-            reg_mae = mean_absolute_error(y_reg_true, y_reg_pred)
-            reg_r2 = r2_score(y_reg_true, y_reg_pred)
+        mean_prediction_horizon, median_prediction_horizon = np.nan, np.nan
+        
+        if self.best_regressor and hypo_events_mask_test.any():
+            y_reg_true_hypo = y_reg_true[hypo_events_mask_test]
+            X_reg_test_hypo = X_test[hypo_events_mask_test]
+            
+            y_reg_pred = self.best_regressor.predict(X_reg_test_hypo)
+            reg_mae = mean_absolute_error(y_reg_true_hypo, y_reg_pred)
+            reg_r2 = r2_score(y_reg_true_hypo, y_reg_pred)
             print("\n--- Regressor Performance (on true hypo events) ---")
             print(f"Mean Absolute Error (MAE): {reg_mae:.4f}")
             print(f"R-squared (R²):            {reg_r2:.4f}")
+            
+            # --- Prediction Horizon Analysis ---
+            print("\n--- Regressor Prediction Horizon Analysis ---")
+            analysis_df = test_df_full.loc[hypo_events_mask_test].copy()
+            
+            hypo_time_series = self.df['postprandial_hypo_time']
+            analysis_df = analysis_df.merge(hypo_time_series, left_index=True, right_index=True, how='left')
+            
+            analysis_df['meal_time_start'] = pd.to_datetime(analysis_df['meal_time_start'])
+            analysis_df['postprandial_hypo_time'] = pd.to_datetime(analysis_df['postprandial_hypo_time'])
+
+            prediction_time = analysis_df['meal_time_start'] + pd.to_timedelta(analysis_df['time_to_first_glucose_peak_after_meal'] + 15, unit='m')
+            prediction_horizon = (analysis_df['postprandial_hypo_time'] - prediction_time).dt.total_seconds() / 60
+            prediction_horizon = prediction_horizon[prediction_horizon > 0].dropna()
+            
+            if not prediction_horizon.empty:
+                mean_prediction_horizon = prediction_horizon.mean()
+                median_prediction_horizon = prediction_horizon.median()
+                print(f"Number of hypo events with valid horizon: {len(prediction_horizon)}")
+                print(f"Average Prediction Horizon: {mean_prediction_horizon:.1f} minutes")
+                print(f"Median Prediction Horizon:  {median_prediction_horizon:.1f} minutes")
+            else:
+                print("No valid prediction horizons could be calculated.")
+                
         else:
             print("\n--- Regressor Performance ---")
             print("No true hypoglycemic events in test set or regressor not trained. Skipping evaluation.")
 
         # 2. Overall System Evaluation (Combined) 
-        # Get the final predictions from the entire hybrid system
         y_final_pred = self.predict(X_test)
-        # Get the true minimum glucose values for ALL test samples
-        y_reg_true_all = self.test_df[self.regression_target]
         
-        # Create a mask to identify rows where the true value is not NaN
-        valid_indices_mask = y_reg_true_all.notna()
-        
-        # Calculate the overall MAE
-        # Apply the mask to both true and predicted values before calculating the error
-        overall_system_mae = mean_absolute_error(y_reg_true_all[valid_indices_mask], y_final_pred[valid_indices_mask])
+        # Ensure y_reg_true is aligned with X_test for the final MAE calculation
+        valid_indices_mask = y_reg_true.notna()
+        overall_system_mae = mean_absolute_error(y_reg_true[valid_indices_mask], y_final_pred[valid_indices_mask])
         print("\n--- Overall System Performance (Combined) ---")
         print(f"Overall System MAE: {overall_system_mae:.4f} mg/dL")
 
@@ -328,8 +493,13 @@ class HybridModelTrainer:
             'classifier_auc_roc': class_auc,
             'classifier_recall_hypo': report_dict['Hypo']['recall'],
             'classifier_precision_hypo': report_dict['Hypo']['precision'],
+            'mean_time_gain_min': mean_time_gain,
+            'median_time_gain_min': median_time_gain,
             'regressor_mae_on_hypo': reg_mae,
-            'regressor_r2_on_hypo': reg_r2
+            'regressor_r2_on_hypo': reg_r2,
+            'reg_mean_prediction_horizon': mean_prediction_horizon,
+            'reg_median_prediction_horizon': median_prediction_horizon,
+            'best_params': f"CLF: {self.best_classifier.get_params()['model']} | REG: {self.best_regressor.get_params()['model'] if self.best_regressor else 'N/A'}"
         })
 
 
@@ -347,7 +517,7 @@ class HybridModelTrainer:
 
 
 
-    def run_pipeline(self):
+    def run_pipeline(self, use_smote=False):
         """Orchestrates the training and evaluation for all internally defined model combinations."""
         if self.df.empty or not self.feature_sets:
             print("Cannot run pipeline. Data or feature sets are missing.")
@@ -362,16 +532,81 @@ class HybridModelTrainer:
             if not all(feat in self.df.columns for feat in feature_list):
                 print(f"Warning: Skipping feature set '{feature_set_name}' due to missing columns.")
                 continue
+            
+            
+            # --- Handle NaNs for both train and test sets ---
+            # Training set
+            X_train_initial = self.train_df[feature_list]
+            print("Final class distribution in training set (for classifier):") # Print the original distribution first
+            print(self.train_df[self.classification_target].value_counts())
+            y_class_train_initial = self.train_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
+            # Add the required time columns for the Time Gain calculation
+            train_full = pd.concat([X_train_initial, y_class_train_initial, self.train_df[self.regression_target], self.train_df['subj_id'], self.train_df['meal_time_start'], self.train_df['time_to_first_glucose_peak_after_meal']], axis=1)            
+            initial_train_rows = len(train_full)
+            train_full.dropna(inplace=True)
+
+            print(f"Dropped {initial_train_rows - len(train_full)} rows with NaN values from the training set.")
+            print(f"Final training set dimensions: {train_full.shape[0]} postprandial periods.")
+            print("Final class distribution in training set (for classifier):")
+            print(train_full[self.classification_target].value_counts())
+
+            # Test set
+            X_test_initial = self.test_df[feature_list]
+            print("Final class distribution in test set (for classifier):") # Print the original distribution first
+            print(self.test_df[self.classification_target].value_counts())
+            y_class_test_initial = self.test_df[self.classification_target].apply(lambda x: 1 if x > 0 else 0)
+            # Add the required time columns for the Time Gain calculation
+            test_full = pd.concat([X_test_initial, y_class_test_initial, self.test_df[self.regression_target], self.test_df['subj_id'], self.test_df['meal_time_start'], self.test_df['time_to_first_glucose_peak_after_meal']], axis=1)
+            initial_test_rows = len(test_full)
+            test_full.dropna(inplace=True)
+
+            print(f"\nDropped {initial_test_rows - len(test_full)} rows with NaN values from the test set.")
+            print(f"Final test set dimensions: {test_full.shape[0]} postprandial periods.")
+            print("Final class distribution in test set (for classifier):")
+            print(test_full[self.classification_target].value_counts())
+
+            # Calculate and print final split percentage
+            final_train_rows = len(train_full)
+            final_test_rows = len(test_full)
+            total_rows = final_train_rows + final_test_rows
+            if total_rows > 0:
+                train_percent = (final_train_rows / total_rows) * 100
+                test_percent = (final_test_rows / total_rows) * 100
+                print(f"\nFinal data split after dropping NaNs: {train_percent:.1f}% train / {test_percent:.1f}% test")
+            
+            if final_train_rows == 0 or final_test_rows == 0:
+                print("Not enough data to train/test after dropping NaNs. Skipping feature set.")
+                continue
+
+            # Prepare final, clean data for the methods
+            X_train = train_full[feature_list]
+            y_class_train = train_full[self.classification_target]
+            y_reg_train = train_full[self.regression_target]
+            groups = train_full['subj_id']
+
+            X_test = test_full[feature_list]
+            y_class_test = test_full[self.classification_target]
+            y_reg_test = test_full[self.regression_target]
+            
 
             for model_combo_name, models in model_combinations.items():
                 print(f"\n--- Testing Model Combination: {model_combo_name} ---")
                 
                 self.train_and_tune(
+                    X_train=X_train, y_class_train=y_class_train, y_reg_train=y_reg_train, groups=groups,
                     feature_list=feature_list, classifier_model=models['classifier'],
                     classifier_params=models['classifier_params'], regressor_model=models['regressor'],
-                    regressor_params=models['regressor_params']
+                    regressor_params=models['regressor_params'],
+                    use_smote=use_smote 
                 )
-                self.evaluate(feature_set_name, feature_list, model_combo_name)
+                self.evaluate(X_test, y_class_test, y_reg_test, test_full, feature_set_name, model_combo_name)
+        
+        # Conditionally name the log file and save the results
+        log_filename = "tuned_hybrid_performance_log.csv"
+        if use_smote:
+            log_filename = "tuned_hybrid_performance_log_with_smote.csv"
+        
+        self.save_results_to_csv(log_filename)
 
 
 

@@ -316,3 +316,15 @@ def create_postprandial_dataframe(subject_df, all_wearable_data, subject_id, pos
         postprandial_data.append(row_data)
 
     return pd.DataFrame(postprandial_data)
+
+
+def drop_correlated_features(df, threshold=0.8):
+    """Drops features from a DataFrame with a correlation higher than the threshold."""
+    print(f"Starting with {df.shape[1]} features...")
+    corr_matrix = df.corr().abs()
+    upper = corr_matrix.where(np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)) # np.ones(corr_matrix.shape) ---> creates a matrix of ones with the same shape
+                                                                                     # np.triu(..., k=1) ---> keeps only the upper triangle of that matrix; k=1 to skip the diagonal itself
+    to_drop = [column for column in upper.columns if any(upper[column] > threshold)]
+    print(f"Found and removed {len(to_drop)} features with correlation > {threshold}.")
+    return df.drop(columns=to_drop)
+

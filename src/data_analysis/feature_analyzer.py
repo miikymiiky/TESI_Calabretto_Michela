@@ -45,7 +45,7 @@ class FeatureAnalyzer:
     """
     Classe per l'analisi delle feature estratte e analisi rispetto al target.
     """
-    def __init__(self, data_file_path, analysis_type='classification', 
+    def __init__(self, data_file_path, data_dir_db, analysis_type='classification', 
                  classification_target='target_hypoglycemia', 
                  regression_target='postprandial_glucose_min',
                  feature_set='all'):
@@ -60,6 +60,7 @@ class FeatureAnalyzer:
             feature_set (str): Which feature set to use: 'all', 'activity', or 'no_activity'.
         """
         self.data_file_path = data_file_path
+        self.data_dir_db = data_dir_db
         self.analysis_type = analysis_type
         self.classification_target = classification_target
         self.regression_target = regression_target
@@ -121,7 +122,8 @@ class FeatureAnalyzer:
             "postprandial_deep_hypo_duration_minutes",
             "glucose_at_first_peak",
             "hypo_to_check_flag",
-            "is_saturated_at_39"
+            "is_saturated_at_39",
+            "was_interpolated"
         ]
         
         
@@ -434,7 +436,8 @@ class FeatureAnalyzer:
         #    print(results_df)
         
         # Save results to CSV 
-        output_path = 'regression_feature_significance.csv'
+        output_filename = 'regression_feature_significance.csv'
+        output_path = os.path.join(self.data_dir_db, output_filename) 
         results_df.to_csv(output_path, index=False)
         print(f"\nFull regression results saved to: {output_path}")
 
@@ -784,7 +787,8 @@ class FeatureAnalyzer:
         #with pd.option_context('display.max_rows', None):
         #    print(results_df)
         
-        output_path = 'classification_omnibus_tests.csv'
+        output_filename = 'classification_omnibus_tests.csv'
+        output_path = os.path.join(self.data_dir_db, output_filename) 
         results_df.to_csv(output_path, index=False)
         print(f"\nFull omnibus test results saved to: {output_path}")
         
@@ -964,7 +968,8 @@ class FeatureAnalyzer:
         #    print(results_df)
         
         # Save results to CSV
-        output_path = 'classification_posthoc_tests.csv'
+        output_filename = 'classification_posthoc_tests.csv'
+        output_path = os.path.join(self.data_dir_db, output_filename) 
         results_df.to_csv(output_path, index=False)
         print(f"\nFull post-hoc test results saved to: {output_path}")
             
@@ -1118,7 +1123,7 @@ class FeatureAnalyzer:
         ]
 
         # --- Helper function to perform the 4-step selection process ---
-        def get_top_features(results_df):
+        def get_top_features(results_df, apply_effect_size_filter=True):
             
             # Step 1: Filter by Significance (P-Value)
             filtered_df = results_df[results_df['P-Value'] < p_value_threshold].copy()
@@ -1144,7 +1149,7 @@ class FeatureAnalyzer:
                 filtered_df = filtered_df[reliable_mask]
             
             # Add optional filter for minimum effect size 
-            if min_effect_sizes and not filtered_df.empty:
+            if apply_effect_size_filter and min_effect_sizes and not filtered_df.empty:
                 initial_count = len(filtered_df)
                 
                 # Create a boolean mask for each condition in the dictionary
@@ -1191,20 +1196,67 @@ class FeatureAnalyzer:
         # Add headers to group the output 
         all_features_df = significant_features_df.copy()
 
-        # Group 1: Pre-Meal Features Only
+
+        # GROUP 1: Pre-Meal Features Only
         print("\n--- Processing Group: Pre-Meal ---")
         pre_meal_mask = all_features_df['Feature'].str.contains('|'.join(pre_meal_keywords))
-        pre_meal_results = get_top_features(all_features_df[pre_meal_mask])
+        pre_meal_results = get_top_features(all_features_df[pre_meal_mask], apply_effect_size_filter=True)
 
-        # Group 2: Post-Meal Predictive Features Only
+
+        # GROUP 2: Post-Meal Predictive Features Only
         print("\n--- Processing Group: Post-Meal Predictive ---")
         post_meal_mask = all_features_df['Feature'].str.contains('|'.join(post_meal_predictive_keywords))
-        post_meal_results = get_top_features(all_features_df[post_meal_mask])
+        post_meal_results = get_top_features(all_features_df[post_meal_mask], apply_effect_size_filter=False)
+        
+        # Manually add required features to the post-meal set**
+        print("Manually adding 'glucose_value_15min_after_peak1' and 'first_glucose_peak_value_after_meal' to the Post-Meal set.")
+        features_to_force = ['glucose_value_15min_after_peak1', 'first_glucose_peak_value_after_meal']
+        
+        # Get the full statistical info for these features from the main results dataframe
+        forced_features_df = significant_features_df[significant_features_df['Feature'].isin(features_to_force)]
+        
+        # Combine them with the existing results and remove duplicates in case they were already selected
+        post_meal_results = pd.concat([post_meal_results, forced_features_df]).drop_duplicates(subset=['Feature']).reset_index(drop=True)
+        print(f"Post-Meal set now has {len(post_meal_results)} features.")
 
-        # Group 3: Mixed Features
-        print("\n--- Processing Group: Mixed (Pre & Post) ---")
-        mixed_mask = pre_meal_mask | post_meal_mask
-        mixed_results = get_top_features(all_features_df[mixed_mask])
+
+        # GROUP 3: Mixed Features
+        print("\n--- Processing Group: Mixed (by combining final Pre- and Post-Meal sets) ---")
+        # 1. Combine the final, filtered results from the other two sets
+        combined_df = pd.concat([pre_meal_results, post_meal_results]).drop_duplicates(subset=['Feature'])
+    
+        # 2. Sort the combined list by P-Value to prioritize the most significant features
+        combined_df = combined_df.sort_values(by='P-Value').reset_index(drop=True)
+        print(f"Combined {len(pre_meal_results)} pre-meal and {len(post_meal_results)} post-meal features into a pool of {len(combined_df)} unique features.")
+
+        # 3. Prune the combined list for multicollinearity to get the final top N features
+        uncorrelated_mixed_names = self.select_uncorrelated_features(
+            combined_df,
+            top_n=top_n, 
+            threshold=correlation_threshold
+        )
+        mixed_results = combined_df[combined_df['Feature'].isin(uncorrelated_mixed_names)]
+        
+        # 4. Manually add the two forced features to the mixed set if they aren't already there
+        print("Checking for and manually adding forced features to the Mixed set.")
+        current_mixed_features = mixed_results['Feature'].tolist()
+        added_to_mixed = False
+        for feat in features_to_force:
+            if feat not in current_mixed_features:
+                feature_row_to_add = significant_features_df[significant_features_df['Feature'] == feat]
+                mixed_results = pd.concat([mixed_results, feature_row_to_add])
+                added_to_mixed = True
+        
+        if added_to_mixed:
+            mixed_results = mixed_results.reset_index(drop=True)
+            print(f"Forced features added. Mixed set now has {len(mixed_results)} features.")
+        else:
+            print("Forced features were already present in the Mixed set.")
+
+        # print("\n--- Processing Group: Mixed (Pre & Post) ---")
+        # mixed_mask = pre_meal_mask | post_meal_mask
+        # mixed_results = get_top_features(all_features_df[mixed_mask], apply_effect_size_filter=True)
+        
         
         return {
             "Pre-Meal": pre_meal_results,
