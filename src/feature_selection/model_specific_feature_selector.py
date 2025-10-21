@@ -170,23 +170,47 @@ class ModelSpecificFeatureSelector:
 
         # 6. Drop highly correlated features, respecting the order of p-value importance
         X_decorrelated = self._drop_correlated_features(X_initial, threshold=0.8)
-        print(f"Final number of features for SFS: {X_decorrelated.shape[1]}")
         
-        # Print the final pool of candidate features 
+        # 7. Calculate and print NaN percentage for each candidate feature
+        nan_percentages = X_decorrelated.isnull().sum() * 100 / len(X_decorrelated)
+        nan_df = nan_percentages.reset_index()
+        nan_df.columns = ['Feature', 'NaN %']
+        nan_df = nan_df.sort_values(by='NaN %', ascending=False)
+
         print("\n" + "="*80)
-        print(" " * 20 + "FINAL CANDIDATE FEATURES FOR SFS")
+        print(" " * 15 + "CANDIDATE FEATURES (POST-CORRELATION FILTER)")
+        print(" " * 21 + f"Total Features: {len(nan_df)}")
         print("="*80)
-        final_feature_pool = X_decorrelated.columns.tolist()
-        for i, feature in enumerate(final_feature_pool, 1):
-            print(f"  {i:3d}. {feature}")
+        print(nan_df.to_string(index=False))
+
+        # 8. Filter out features with more than 30% NaNs
+        threshold = 30.0
+        features_to_drop = nan_percentages[nan_percentages > threshold].index.tolist()
+        X_final = X_decorrelated.drop(columns=features_to_drop)
+        
+        print(f"\n>>> Dropping {len(features_to_drop)} features with > {threshold}% missing values.")
+        if features_to_drop:
+            print("Dropped features:", ", ".join(features_to_drop))
+
+        # 9. Print the final list of features going into SFS
+        final_nan_percentages = X_final.isnull().sum() * 100 / len(X_final)
+        final_nan_df = final_nan_percentages.reset_index()
+        final_nan_df.columns = ['Feature', 'NaN %']
+        final_nan_df = final_nan_df.sort_values(by='NaN %', ascending=False)
+
+        print("\n" + "="*80)
+        print(" " * 20 + "FINAL FEATURES FOR SFS (POST-NAN FILTER)")
+        print(" " * 21 + f"Total Features: {len(final_nan_df)}")
+        print("="*80)
+        print(final_nan_df.to_string(index=False))
         print("="*80 + "\n")
 
-        # 7. Get final X, y, and groups
-        X = X_decorrelated
+        # 10. Get final X, y, and groups
+        X = X_final
         y = df.loc[X.index, self.target_column]
         groups = df.loc[X.index, 'subj_id']
 
-        # 8. Adjust target for classification type
+        # 11. Adjust target for classification type
         if self.analysis_type == 'binary_classification':
             y = (y > 0).astype(int)
 

@@ -8,3 +8,5 @@ scikit-posthocs
 scikit-learn
 xgboost
 lightgbm
+imbalanced-learn
+mlxtend

@@ -307,7 +307,7 @@ class ModelTrainer:
         param_grids = {}
         if 'classification' in self.analysis_type:
             # Common grids for both classification types
-            param_grids["Support Vector Machine"] = [
+            param_grids["SVC"] = [
                 {
                     'model__kernel': ['linear'], # uses a simple straigth line as a decision boundary
                     'model__C': [0.001, 0.01, 0.1, 1, 10, 100]
@@ -320,7 +320,7 @@ class ModelTrainer:
                                                       # 'auto' ---> sets the gamma value based only on the number of features
                 }
             ]
-            param_grids["Random Forest"] = {
+            param_grids["RandomForest"] = {
                'model__n_estimators': [100, 200, 300, 400, 500, 600, 700], # number of trees (400 has way higher precision, but very vewry low recall, while 200 the inverse)
                'model__max_depth': [10, 20, 30, None], # maximum depth of each tree
                'model__min_samples_split': [2, 5, 10], # minimum number of samples to allow a further split of an internal node [i.e. requires at least 5 samples to split]
@@ -343,7 +343,7 @@ class ModelTrainer:
             
             # XGBoost grid depends on the classification type
             if self.analysis_type == 'binary_classification':
-                param_grids["Logistic Regression"] = [
+                param_grids["LogisticRegression"] = [
                     {
                         'model__penalty': ['l1'], # Lasso regularization
                         'model__solver': ['liblinear', 'saga'], # model__solver: algorithm used to optimize the logistic regression
@@ -364,7 +364,7 @@ class ModelTrainer:
                 }
             elif self.analysis_type == 'multi_class_classification':
                 print("Using parameter grid without 'liblinear' for Multi-Class Logistic Regression.")
-                param_grids["Logistic Regression"] = [
+                param_grids["LogisticRegression"] = [
                     {
                         'model__penalty': ['l1'],
                         'model__solver': ['saga'],
@@ -387,13 +387,13 @@ class ModelTrainer:
                 }
         
         elif self.analysis_type == 'regression':
-            param_grids["Ridge Regression"] = {
+            param_grids["Ridge"] = {
                 'model__alpha': [0.01, 0.1, 1.0, 10.0, 100.0, 200.0, 500.0]  # controls the strength of the L2 regularization
             }
-            param_grids["Lasso Regression"] = {
+            param_grids["Lasso"] = {
                 'model__alpha': [0.01, 0.1, 1.0, 10.0, 100.0] # L1 regularization strength
             }
-            param_grids["Support Vector Regressor"] = [
+            param_grids["SVR"] = [
                 {
                     'model__kernel': ['linear'],
                     'model__C': [0.01, 0.1, 1, 10, 100]
@@ -404,18 +404,18 @@ class ModelTrainer:
                     'model__gamma': ['scale', 'auto']
                 }
             ]
-            param_grids["Random Forest Regressor"] = {
+            param_grids["RandomForest"] = {
                'model__n_estimators': [100, 200, 300, 400, 500],
                'model__max_depth': [10, 20, None],
                'model__min_samples_split': [2, 5],
                'model__min_samples_leaf': [1, 2]
             }
-            param_grids["XGBoost Regressor"] = {
+            param_grids["XGBoost"] = { 
                 'model__n_estimators': [100, 200, 300, 400, 500],
                 'model__max_depth': [3, 5, 7],
                 'model__learning_rate': [0.01, 0.1]
             }
-            param_grids["LightGBM Regressor"] = {
+            param_grids["LightGBM"] = {
                 'model__learning_rate': [0.01, 0.1],
                 'model__n_estimators': [100, 200, 300, 400, 500, 600],
                 'model__num_leaves': [20, 31, 40],
@@ -431,10 +431,12 @@ class ModelTrainer:
         # Ttrack multiple metrics during the search
         if self.analysis_type == 'binary_classification':
             scoring_metrics = ['roc_auc', 'recall', 'average_precision']
+            # refit_metric = 'recall'
             refit_metric = 'roc_auc'
         elif self.analysis_type == 'multi_class_classification':
             scoring_metrics = ['roc_auc_ovr_weighted', 'recall_weighted', 'f1_weighted'] # roc_auc_ovr_weighted ---> 'ovr' = One Versus Rest(each class is compared against all the others); 'weighted' = scores are weighted by how many samples are in each class
-            refit_metric = 'roc_auc_ovr_weighted'
+            refit_metric = 'recall_weighted'
+            # refit_metric = 'roc_auc_ovr_weighted'
         else: # Regression
             # Note: Scikit-learn uses scores where higher is better.
             # So we use 'neg_mean_absolute_error' and the grid search will try to make it closer to 0.
@@ -449,7 +451,17 @@ class ModelTrainer:
                                                          # verbose=1 ---> controls how much information is printed while the grid search runs; 1 means it will print basic progress information for each combination being tested
         
         # Fit the grid search to the data. It will automatically handle the CV withouth subject leakage.
-        grid_search.fit(X_train, y_train, groups=groups)
+        fit_params = {}
+        if self.analysis_type == 'multi_class_classification' and 'XGBClassifier' in str(pipeline.named_steps['model']):
+            print("Calculating sample weights for multi-class XGBoost...")
+            sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
+            fit_params['model__sample_weight'] = sample_weights
+        
+        # Fit the grid search to the data.
+        if fit_params:
+            grid_search.fit(X_train, y_train, groups=groups, **fit_params)
+        else:
+            grid_search.fit(X_train, y_train, groups=groups)
         
         print("\n--- Grid Search Results ---")
         print(f"Best Parameters Found (optimized for {refit_metric.upper()}): {grid_search.best_params_}")
@@ -908,61 +920,49 @@ class ModelTrainer:
                 pipeline = ImbPipeline(pipeline_steps)                
                 
                 
-                # --- CHANGES START ---
-                
-                # --- TRAIN ON FULL TRAINING SET (SKIPPING TUNING) ---
-                print("Skipping GridSearchCV. Training model with default parameters.")
-                
-                # Initialize sample_weights as None for multi_class classification
-                sample_weights = None
-            
-                # Check if we are running multi-class classification for XGBoost
-                if self.analysis_type == 'multi_class_classification' and model_name == 'XGBoost':
-                    print("Calculating sample weights for multi-class XGBoost...")
-                
-                    # This automatically calculates a weight for each individual sample in y_train
-                    sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
-            
-                # Conditionally pass the weights to the fit method
-                if sample_weights is not None:
-                    # The parameter must be prefixed with the pipeline step name ('model')
-                    pipeline.fit(X_train, y_train, model__sample_weight=sample_weights)
-                else:
-                    # Fit normally for all other models
-                    pipeline.fit(X_train, y_train)
-                
-                best_pipeline = pipeline
-                best_params = 'default' # Placeholder for logging
-                
-                
-                
-                
-                # TUNING & CV TO COMMENT OUT FOR NOW
-                # param_grid = param_grids.get(model_name)
-                # if not param_grid:
-                #     print(f"No parameter grid found for {model_name}. Skipping tuning.")
-                #     continue
+                # TUNING AND TRAINING
+                param_grid = param_grids.get(model_name)
+                if not param_grid:
+                    # Fallback for models without a defined grid (e.g., if you rename one)
+                    # This will train with default parameters, which is better than crashing.
+                    print(f"No parameter grid found for {model_name}. Training with default parameters.")
+                    
+                    # This logic is copied from the "default" block to handle sample weights
+                    sample_weights = None
+                    if self.analysis_type == 'multi_class_classification' and model_name == 'XGBoost':
+                        print("Calculating sample weights for multi-class XGBoost...")
+                        sample_weights = compute_sample_weight(class_weight='balanced', y=y_train)
+                    
+                    if sample_weights is not None:
+                        pipeline.fit(X_train, y_train, model__sample_weight=sample_weights)
+                    else:
+                        pipeline.fit(X_train, y_train)
+                    
+                    best_pipeline = pipeline
+                    best_params = 'default (no grid found)'
 
-                # # TUNING AND TRAINING
-                # cv = GroupKFold(n_splits=self.n_splits) # no subject used for the training are in the test set ---> no data leakage
-                
-                # # 1. Tune the model to find the best hyperparameters
-                # best_pipeline, tuning_results = self._perform_grid_search(pipeline, param_grid, X_train, y_train, cv, groups)
-                
-                # # Save the detailed tuning results for this model
-                # tuning_filename = f"tuning_results_{model_name.replace(' ', '')}_{feature_set_name}.csv"
-                # try:
-                #     db_directory = os.path.dirname(self.data_file_path) 
-                #     path = os.path.join(db_directory, 'tuning_logs', tuning_filename) 
-                #     os.makedirs(os.path.dirname(path), exist_ok=True)
-                #     tuning_results.to_csv(path, index=False)
-                #     print(f"Saved detailed tuning results to: {path}")
-                # except Exception as e:
-                #     print(f"Error saving tuning results: {e}")
-                
-                # --- CHANGES FINISH ---
-                
-                
+                else: # Main tuning path 
+                    # TUNING AND TRAINING
+                    cv = GroupKFold(n_splits=self.n_splits) # no subject used for the training are in the test set ---> no data leakage
+                    
+                    # 1. Tune the model to find the best hyperparameters
+                    best_pipeline, tuning_results = self._perform_grid_search(pipeline, param_grid, X_train, y_train, cv, groups)
+                    
+                    # Extract the best parameters for logging 
+                    best_params = best_pipeline.get_params()['model']
+                    
+                    # Save the detailed tuning results for this model
+                    tuning_filename = f"tuning_results_{model_name.replace(' ', '')}_{feature_set_name}.csv"
+                    try:
+                        db_directory = os.path.dirname(self.data_file_path) 
+                        # Create a 'tuning_logs' subdirectory
+                        path = os.path.join(db_directory, 'tuning_logs', tuning_filename) 
+                        os.makedirs(os.path.dirname(path), exist_ok=True) # Ensure the directory exists
+                        tuning_results.to_csv(path, index=False)
+                        print(f"Saved detailed tuning results to: {path}")
+                    except Exception as e:
+                        print(f"Error saving tuning results: {e}")
+        
                 
                 # 2. Use the best found model for final evaluation on the test set
                 y_pred = best_pipeline.predict(X_test)
