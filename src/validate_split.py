@@ -21,12 +21,13 @@ TEST_SIZE = 0.2
 RANDOM_STATE = 42
 
 # --- Select Analysis Type ---
-ANALYSIS_TYPE = 'regression'  # Options: 'regression' or 'classification'
+ANALYSIS_TYPE = 'classification'  # Options: 'regression' or 'classification'
 
 # Dynamically set the target and features file based on analysis type
 if ANALYSIS_TYPE == 'classification':
     TARGET_COLUMN = 'target_hypoglycemia'
-    FEATURES_FILE = "classification_selected_feature_sets.json"
+    FEATURES_FILE = "sfs_selected_features_classification_roc_auc.json"
+    #FEATURES_FILE = "classification_selected_feature_sets.json"
 else: # regression
     TARGET_COLUMN = 'postprandial_glucose_min' 
     FEATURES_FILE = "regression_selected_feature_sets.json" 

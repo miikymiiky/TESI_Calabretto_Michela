@@ -120,10 +120,16 @@ class FeatureAnalyzer:
             "postprandial_hypo_duration_minutes",
             "postprandial_deep_hypo",
             "postprandial_deep_hypo_duration_minutes",
-            "glucose_at_first_peak",
             "hypo_to_check_flag",
             "is_saturated_at_39",
-            "was_interpolated"
+            "was_interpolated",
+            
+            'activity_proportion_after_peak', 
+            'pulse_ox_mean', 
+            'pulse_ox_std',  
+            'pulse_ox_min',  
+            'pulse_ox_max',  
+            'pulse_ox_range'
         ]
         
         
@@ -684,6 +690,8 @@ class FeatureAnalyzer:
         features_to_exclude_for_prediction = [
             'target_hypoglycemia','time_peak_hypo_event','postprandial_glucose_min',
             'second_glucose_peak_value_after_meal','time_to_second_glucose_peak_after_meal',
+            'activity_proportion_after_peak',
+            'pulse_ox_mean', 'pulse_ox_std', 'pulse_ox_min', 'pulse_ox_max', 'pulse_ox_range'
         ]
         for col in self.df.columns:
             if any(keyword in col for keyword in ['postprandial_', '_until_nadir', '_later_post_peak']):

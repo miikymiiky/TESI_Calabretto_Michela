@@ -13,6 +13,11 @@ from sklearn.model_selection import train_test_split
 import random
 import json
 
+# Imports for Feature Importance Evaluation
+from sklearn.inspection import permutation_importance
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 # Imports for ML Models and Evaluation 
 from sklearn.pipeline import Pipeline
 from sklearn.impute import SimpleImputer
@@ -34,8 +39,10 @@ from sklearn.metrics import (accuracy_score, confusion_matrix, classification_re
 # Imports for Cross-Validation 
 from sklearn.model_selection import GroupKFold, cross_validate, GridSearchCV
 from sklearn.utils.class_weight import compute_sample_weight
+from sklearn.metrics import precision_recall_curve
 from imblearn.over_sampling import SMOTE 
 from imblearn.pipeline import Pipeline as ImbPipeline
+import matplotlib.pyplot as plt
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="X does not have valid feature names, but LGBMClassifier was fitted with feature names")
@@ -51,7 +58,8 @@ class ModelTrainer:
     def __init__(self, data_file_path: str, features_file_path: str, analysis_type: str, 
                  classification_target: str, regression_target: str,
                  test_size: float = 0.2, random_state: int = 42, n_splits: int = 5,
-                 match_models_to_sets: bool = False, use_model_specific_sets: bool = False):
+                 match_models_to_sets: bool = False, use_model_specific_sets: bool = False,
+                 run_feature_importance: bool = False):
         """
         Initializes the ModelTrainer.
 
@@ -99,6 +107,7 @@ class ModelTrainer:
         self.results_log = []
         self.match_models_to_sets = match_models_to_sets
         self.use_model_specific_sets = use_model_specific_sets
+        self.run_feature_importance = run_feature_importance
     
     
     
@@ -431,8 +440,8 @@ class ModelTrainer:
         # Ttrack multiple metrics during the search
         if self.analysis_type == 'binary_classification':
             scoring_metrics = ['roc_auc', 'recall', 'average_precision']
-            # refit_metric = 'recall'
-            refit_metric = 'roc_auc'
+            refit_metric = 'recall'
+            # refit_metric = 'roc_auc'
         elif self.analysis_type == 'multi_class_classification':
             scoring_metrics = ['roc_auc_ovr_weighted', 'recall_weighted', 'f1_weighted'] # roc_auc_ovr_weighted ---> 'ovr' = One Versus Rest(each class is compared against all the others); 'weighted' = scores are weighted by how many samples are in each class
             refit_metric = 'recall_weighted'
@@ -475,18 +484,71 @@ class ModelTrainer:
     
     
     
-    def _evaluate_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba, test_df_full):
+    
+    
+    
+    def _plot_precision_recall_curve(self, y_true, y_pred_proba, model_name, feature_set_name):
+        """Helper to plot the Precision-Recall curve and the optimal F1 point."""
+        
+        precisions, recalls, thresholds = precision_recall_curve(y_true, y_pred_proba)
+        f1_scores = (2 * precisions * recalls) / (precisions + recalls + 1e-10)
+        
+        best_f1_idx = np.argmax(f1_scores[:-1])
+        best_f1_threshold = thresholds[best_f1_idx]
+        best_f1 = f1_scores[best_f1_idx]
+        best_precision = precisions[best_f1_idx]
+        best_recall = recalls[best_f1_idx]
+
+        plt.figure(figsize=(10, 7))
+        plt.plot(recalls, precisions, label='P-R Curve', color='royalblue')
+        plt.scatter(best_recall, best_precision, marker='o', color='red', s=100,
+                    label=f'Best F1: {best_f1:.2f}\nThresh: {best_f1_threshold:.2f}\nPrec: {best_precision:.2f}, Rec: {best_recall:.2f}', zorder=5)
+        
+        # Mark the default 0.5 threshold
+        default_preds = (y_pred_proba >= 0.5).astype(int)
+        default_precision = precision_score(y_true, default_preds)
+        default_recall = recall_score(y_true, default_preds)
+        plt.scatter(default_recall, default_precision, marker='x', color='black', s=100,
+                    label=f'Default 0.5 Thresh\nPrec: {default_precision:.2f}, Rec: {default_recall:.2f}', zorder=5)
+        
+        # Mark the Minimum Recall Point 
+        MIN_RECALL_TARGET = 0.75 
+        recall_met_indices = np.where(recalls[:-1] >= MIN_RECALL_TARGET)[0]
+        if len(recall_met_indices) > 0:
+            precision_at_min_recall = precisions[recall_met_indices]
+            best_precision_idx_at_recall = recall_met_indices[np.argmax(precision_at_min_recall)]
+            
+            thresh_min_rec = thresholds[best_precision_idx_at_recall]
+            prec_min_rec = precisions[best_precision_idx_at_recall]
+            rec_min_rec = recalls[best_precision_idx_at_recall]
+            
+            plt.scatter(rec_min_rec, prec_min_rec, marker='s', color='purple', s=100,
+                        label=f'Min Recall {MIN_RECALL_TARGET:.2f}\nThresh: {thresh_min_rec:.2f}\nPrec: {prec_min_rec:.2f}, Rec: {rec_min_rec:.2f}', zorder=5)
+        
+        plt.xlabel('Recall (Sensitivity)')
+        plt.ylabel('Precision')
+        plt.title(f'Precision-Recall Curve for {model_name} ({feature_set_name})')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+    
+    
+    
+    
+    
+    
+    def _evaluate_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba, test_df_full, feature_set_name: str):
         """Dispatcher function that calls the appropriate evaluation method."""
         if self.analysis_type == 'binary_classification':
             # For binary, we need the probability of the positive class (class 1)
-            return self._evaluate_binary_classification(model_name, best_params, y_true, y_pred, y_pred_proba[:, 1], test_df_full)
+            return self._evaluate_binary_classification(model_name, best_params, y_true, y_pred, y_pred_proba[:, 1], test_df_full, feature_set_name)
         elif self.analysis_type == 'multi_class_classification':
             # For multi-class, we need the full probability matrix
             return self._evaluate_multi_class_classification(model_name, best_params, y_true, y_pred, y_pred_proba, test_df_full)
 
     
     
-    def _evaluate_binary_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba, test_df_full):
+    def _evaluate_binary_classification(self, model_name: str, best_params, y_true, y_pred, y_pred_proba, test_df_full, feature_set_name: str):
         """Calculates and prints a comprehensive set of classification metrics."""
         print(f"\n--- Evaluation Metrics for: {model_name} (Binary) ---")
 
@@ -504,7 +566,7 @@ class ModelTrainer:
         precision = tp / (tp + fp) if (tp + fp) > 0 else 0
         sensitivity_recall = tp / (tp + fn) if (tp + fn) > 0 else 0 # Recall
         specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
-        f1_score = 2 * (precision * sensitivity_recall) / (precision + sensitivity_recall) if (precision + sensitivity_recall) > 0 else 0
+        calculated_f1 = 2 * (precision * sensitivity_recall) / (precision + sensitivity_recall) if (precision + sensitivity_recall) > 0 else 0
         
         # Other key metrics
         mcc = matthews_corrcoef(y_true, y_pred)
@@ -516,7 +578,7 @@ class ModelTrainer:
         print(f"Precision:            {precision:.4f}")
         print(f"Sensitivity (Recall): {sensitivity_recall:.4f}")
         print(f"Specificity:          {specificity:.4f}")
-        print(f"F1 Score:             {f1_score:.4f}")
+        print(f"F1 Score:             {calculated_f1:.4f}")
         print(f"MCC:                  {mcc:.4f}")
         print(f"AUC-ROC:              {roc_auc:.4f}")
         print(f"AUC-PR:               {pr_auc:.4f}")
@@ -532,12 +594,83 @@ class ModelTrainer:
             'precision': precision,
             'recall': sensitivity_recall,
             'specificity': specificity,
-            'f1_score': f1_score,
+            'f1_score': calculated_f1,
             'mcc': matthews_corrcoef(y_true, y_pred),
             'auc_roc': roc_auc_score(y_true, y_pred_proba),
             'auc_pr': average_precision_score(y_true, y_pred_proba)
         }
         
+        
+        
+        
+        # --- Optimal Probability Threshold ---
+        print("\n--- Optimal Threshold Analysis ---")
+       
+        # 1. Get precision, recall, and all possible thresholds
+        precisions, recalls, thresholds = precision_recall_curve(y_true, y_pred_proba)
+
+        # 2. Calculate F1-score for each threshold
+        # We add a small epsilon (1e-10) to avoid division by zero
+        f1_scores = (2 * precisions * recalls) / (precisions + recalls + 1e-10)
+       
+        # 3. Find the threshold that gives the best F1-score
+        # Skip the last value as precision_recall_curve adds a dummy entry
+        best_f1_idx = np.argmax(f1_scores[:-1])
+        best_f1_threshold = thresholds[best_f1_idx]
+        best_f1 = f1_scores[best_f1_idx]
+       
+        print(f"Default 0.5 Threshold F1:   {f1_score(y_true, y_pred):.4f}")
+        print(f"Optimal F1-Score Found:   {best_f1:.4f} at Threshold = {best_f1_threshold:.4f}")
+
+        # 4. Get new predictions based on this optimal threshold
+        y_pred_new = (y_pred_proba >= best_f1_threshold).astype(int)
+       
+        print("\n--- Evaluation with Optimal F1-Threshold ---")
+        cm_new = confusion_matrix(y_true, y_pred_new, labels=[0, 1])
+        print("New Confusion Matrix:")
+        print(f"          Predicted 0           Predicted 1")
+        print(f"Actual 0 [[{cm_new[0][0]:^11d} {cm_new[0][1]:^11d}]] (No Hypo)")
+        print(f"Actual 1 [[{cm_new[1][0]:^11d} {cm_new[1][1]:^11d}]] (Hypo)")
+        print("-" * 40)
+        print("New Classification Report (Optimal F1):")
+        print(classification_report(y_true, y_pred_new, target_names=['No Hypo', 'Hypo']))
+        
+        # Call the new plotting function
+        self._plot_precision_recall_curve(y_true, y_pred_proba, model_name, feature_set_name)
+        
+        
+        # --- Find threshold for Minimum Recall ---
+        MIN_RECALL_TARGET = 0.75 # Desired recall minimum
+        
+        # Find indices where recall is >= target (excluding the last dummy entry)
+        recall_met_indices = np.where(recalls[:-1] >= MIN_RECALL_TARGET)[0]
+        
+        best_recall_thresh = None
+        best_recall_precision = -1
+        
+        if len(recall_met_indices) > 0:
+            # Among those meeting recall, find the index with the highest precision
+            precision_at_min_recall = precisions[recall_met_indices]
+            best_precision_idx_at_recall = recall_met_indices[np.argmax(precision_at_min_recall)]
+            
+            best_recall_thresh = thresholds[best_precision_idx_at_recall]
+            best_recall_precision = precisions[best_precision_idx_at_recall]
+            actual_recall = recalls[best_precision_idx_at_recall] # The actual recall at this point
+            
+            print(f"\nThreshold for Recall >= {MIN_RECALL_TARGET:.2f}: {best_recall_thresh:.4f}")
+            print(f"  - Achieved Precision: {best_recall_precision:.4f}")
+            print(f"  - Achieved Recall:    {actual_recall:.4f}")
+
+            # Evaluate with this new threshold
+            y_pred_min_recall = (y_pred_proba >= best_recall_thresh).astype(int)
+            print("\n--- Evaluation with Min Recall Threshold ---")
+            print(classification_report(y_true, y_pred_min_recall, target_names=['No Hypo', 'Hypo']))
+        else:
+            print(f"\nCould not find a threshold achieving Recall >= {MIN_RECALL_TARGET:.2f}")
+       
+        
+       
+       
         # --- Time Gain Calculation (for True Positives) ---
         true_positives_mask = (y_true.values > 0) & (y_pred > 0)
         metrics['mean_time_gain_min'] = np.nan
@@ -785,6 +918,115 @@ class ModelTrainer:
     
     
     
+    def _get_feature_importance(self, pipeline, X_test, y_test, feature_names):
+        """
+        Calculates permutation importance for the fitted model on the test set.
+        """
+        # 1. Define the scoring metric based on analysis type
+        if self.analysis_type == 'binary_classification':
+            scoring = 'roc_auc'
+        elif self.analysis_type == 'multi_class_classification':
+            scoring = 'roc_auc_ovr_weighted'
+        elif self.analysis_type == 'regression':
+            scoring = 'r2'
+        else:
+            scoring = None # Will use the model's default scorer
+
+        # 2. Calculate permutation importance
+        print(f"Calculating permutation importance using '{scoring}' scoring...")
+        result = permutation_importance(
+            pipeline,
+            X_test,
+            y_test,
+            n_repeats=5,
+            random_state=self.random_state,
+            n_jobs=-1,
+            scoring=scoring
+        )
+
+        # 3. Format the results into a DataFrame
+        importance_df = pd.DataFrame({
+            'feature': feature_names,
+            'importance_mean': result.importances_mean,
+            'importance_std': result.importances_std
+        })
+        
+        # 4. Sort by mean importance
+        importance_df = importance_df.sort_values('importance_mean', ascending=False).reset_index(drop=True)
+        
+        return importance_df
+
+
+
+    def _plot_feature_importance(self, importance_df, model_name, feature_set_name, top_n=20):
+        """
+        Generates and displays a bar plot for the top N most important features.
+        """
+        # 1. Filter for top N features and remove non-important ones
+        plot_df = importance_df.head(top_n).copy()
+        plot_df = plot_df[plot_df['importance_mean'] > 0] # Only plot features that had a positive impact
+        
+        if plot_df.empty:
+            print(f"No features with positive importance found for {model_name}.")
+            return
+
+        # 2. Create the plot
+        plt.figure(figsize=(10, 8))
+        
+        # Sort values ascending so the most important feature is at the top
+        plot_df = plot_df.sort_values(by='importance_mean', ascending=True)
+        
+        plt.barh(
+            plot_df['feature'], # Y-axis (feature names)
+            plot_df['importance_mean'], # X-axis (the bar lengths)
+            xerr=plot_df['importance_std'], # The error bars
+            color='#440154', # Dark purple
+            capsize=5 # Adds caps to the error bars
+        )
+        
+        # 3. Set titles and labels
+        title = f'Permutation Feature Importance (Top {len(plot_df)})\n{model_name} on {feature_set_name}'
+        if self.analysis_type == 'regression':
+            xlabel = 'Mean Importance (Drop in R-squared)'
+        else:
+            xlabel = 'Mean Importance (Drop in ROC-AUC)'
+            
+        plt.title(title, fontsize=16)
+        plt.xlabel(xlabel, fontsize=12)
+        plt.ylabel('Feature', fontsize=12)
+        plt.yticks(fontsize=10)
+        plt.grid(axis='x', linestyle='--', alpha=0.7)
+        plt.tight_layout()
+        plt.show()
+
+
+
+    def _save_feature_importance(self, importance_df, model_name, feature_set_name):
+        """
+        Saves the full feature importance DataFrame to a CSV file.
+        """
+        if importance_df.empty:
+            return
+
+        # 1. Create a unique filename
+        safe_model_name = model_name.replace(' ', '_').replace('.', '')
+        safe_set_name = feature_set_name.replace(' ', '_').replace('.', '')
+        importance_filename = f"importance_{safe_model_name}_{safe_set_name}.csv"
+        
+        try:
+            # 2. Define the save path (in a new 'feature_importance' subfolder)
+            db_directory = os.path.dirname(self.data_file_path)
+            path = os.path.join(db_directory, 'feature_importance_logs', importance_filename)
+            os.makedirs(os.path.dirname(path), exist_ok=True) # Ensure the directory exists
+
+            # 3. Save the file
+            importance_df.to_csv(path, index=False)
+            print(f"Saved feature importance results to: {path}")
+        except Exception as e:
+            print(f"Error saving feature importance results: {e}")
+    
+    
+    
     def train(self, use_smote=False):
         """
         Main orchestration method for the training pipeline.
@@ -970,13 +1212,38 @@ class ModelTrainer:
                 # Call the correct evaluation function 
                 if 'classification' in self.analysis_type:
                     y_pred_proba = best_pipeline.predict_proba(X_test) 
-                    results = self._evaluate_classification(model_name, best_pipeline.get_params()['model'], y_test, y_pred, y_pred_proba, test_full)
+                    results = self._evaluate_classification(model_name, best_pipeline.get_params()['model'], y_test, y_pred, y_pred_proba, test_full, feature_set_name)
                 else: # Regression
                     results = self._evaluate_regression(model_name, best_pipeline.get_params()['model'], y_test, y_pred, test_full)
                      
                 # 3. Log the results of the tested models
                 results['feature_set'] = feature_set_name # Add feature set info
                 self.results_log.append(results)
+                
+                # Feature Importance Analysis
+                if self.run_feature_importance:
+                    print(f"\n--- Calculating Feature Importance for: {model_name} ---")
+                    try:
+                        # 1. Calculate Importance
+                        # Pass X_test and y_test, which have been correctly NaN-handled
+                        # (either by the pipeline imputer or by pre-dropping)
+                        importance_df = self._get_feature_importance(
+                            best_pipeline, X_test, y_test, feature_list
+                        )
+                        
+                        # 2. Plot Importance
+                        self._plot_feature_importance(
+                            importance_df, model_name, feature_set_name
+                        )
+
+                        # 3. Save Importance Data
+                        self._save_feature_importance(
+                            importance_df, model_name, feature_set_name
+                        )
+
+                    except Exception as e:
+                        # Catch errors (i.e.: if a model fails on the test set)
+                        print(f"Warning: Could not calculate or plot feature importance for {model_name}. Error: {e}")
         
         log_filename = f"{self.analysis_type}_performance_log.csv"
         if use_smote:

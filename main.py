@@ -38,6 +38,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                  run_model_specific_sfs=False,
                  display_sfs_results=False,
                  run_model_training=False,
+                 run_feature_importance=False,
                  run_performance_analysis=False,
                  run_time_gain_analysis=False,
                  RELOAD_STATS_FROM_CSV=True, # Flag for the effect size and CIs computation ---> True: loads the saved values from the csv files; False: runs the entire extrapolation process (bootstraping, ecc...) 
@@ -113,7 +114,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     
     # --- Parametri Specifici per ModelTrainer ---
     # Switch for classification type
-    CLASSIFICATION_TYPE = 'binary' # Options: 'binary' or 'multi_class
+    CLASSIFICATION_TYPE = 'multi_class' # Options: 'binary' or 'multi_class
 
     
     # --- CHOOSE THE FEATURE SELECTION STRATEGY ---
@@ -123,7 +124,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     FEATURE_SET_STRATEGY = 'MODEL_SPECIFIC'  # 'STATISTICAL' or 'MODEL_SPECIFIC' or 'GENERAL_SFS'
     
     # This is only used for the 'MODEL_SPECIFIC' strategy
-    OPTIMIZATION_METRIC = 'f1_score' # 'roc_auc' or 'f1_score'
+    OPTIMIZATION_METRIC = 'roc_auc' # 'roc_auc' or 'f1_score'
 
     # Determine the features filename and trainer flags based on the chosen strategy
     if FEATURE_SET_STRATEGY == 'MODEL_SPECIFIC':
@@ -168,7 +169,8 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         "test_size": 0.20,
         "random_state": 42,
         "match_models_to_sets": match_models_flag,
-        "use_model_specific_sets": FEATURE_SET_STRATEGY == 'MODEL_SPECIFIC'
+        "use_model_specific_sets": FEATURE_SET_STRATEGY == 'MODEL_SPECIFIC',
+        "run_feature_importance": run_feature_importance
     }
     
     
@@ -336,7 +338,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
             # If there are significant features, run the post-hoc tests
             if significant_features is not None and not significant_features.empty:
                 
-                print("\n--- Top 25 Most Significant Features for Classification (with Effect Size CIs) ---")
+                print("\n--- Top 25 Most Significant Features for Classification ---")
                 print(significant_features.head(25))
                 print("\n--- All Significant Features for Classification (Sorted by P-Value) ---")
                 with pd.option_context('display.max_rows', None):
@@ -925,6 +927,7 @@ if __name__ == "__main__":
         run_model_specific_sfs = False,
         display_sfs_results = False,
         run_model_training = True,
+        run_feature_importance = False,
         run_performance_analysis = False,
         run_time_gain_analysis = False,
         RELOAD_STATS_FROM_CSV = True # Set to True to load, False to recalculate the effect size and CIs
