@@ -17,15 +17,15 @@ from sklearn.experimental import enable_iterative_imputer  # for IterativeImpute
 from sklearn.impute import IterativeImputer # for IterativeImputer
 from sklearn.impute import SimpleImputer
 from sklearn.model_selection import GroupKFold
-from mlxtend.feature_selection import SequentialFeatureSelector as SFS
-from mlxtend.plotting import plot_sequential_feature_selection as plot_sfs
+#from mlxtend.feature_selection import SequentialFeatureSelector as SFS
+#from mlxtend.plotting import plot_sequential_feature_selection as plot_sfs
 
 # Model Imports
 from sklearn.linear_model import LogisticRegression, Ridge, Lasso
 from sklearn.svm import SVC, SVR
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from xgboost import XGBClassifier, XGBRegressor
-from lightgbm import LGBMClassifier, LGBMRegressor
+#from xgboost import XGBClassifier, XGBRegressor
+#from lightgbm import LGBMClassifier, LGBMRegressor
 
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, message="X does not have valid feature names, but LGBMClassifier was fitted with feature names")

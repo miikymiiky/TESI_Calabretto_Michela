@@ -31,8 +31,10 @@ import json
 plt.close('all')
 
 
-def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualization=True, 
-                 visualize_preparation_steps=False, 
+def run_pipeline(run_preparation=True, 
+                 run_feature_extraction=True,
+                 run_visualization=True, 
+                 visualize_preparation_steps=True, 
                  run_data_analysis = False, 
                  run_feature_selection=False,
                  run_model_specific_sfs=False,
@@ -41,8 +43,8 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
                  run_feature_importance=False,
                  run_performance_analysis=False,
                  run_time_gain_analysis=False,
-                 RELOAD_STATS_FROM_CSV=True, # Flag for the effect size and CIs computation ---> True: loads the saved values from the csv files; False: runs the entire extrapolation process (bootstraping, ecc...) 
-                 USE_SMOTE_SAMPLING=True): # Flag for the conditional SMOTE step in the models training
+                 RELOAD_STATS_FROM_CSV=False, # Flag for the effect size and CIs computation ---> True: loads the saved values from the csv files; False: runs the entire extrapolation process (bootstraping, ecc...) 
+                 USE_SMOTE_SAMPLING=False): # Flag for the conditional SMOTE step in the models training
     
     """
     Pipeline di elaborazione dei dati.
@@ -121,7 +123,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
     # 'STATISTICAL': Uses the sets from feature_analyzer.py (Pre-Meal, Mixed, etc.).
     # 'MODEL_SPECIFIC': Uses the sets from model_specific_feature_selector.py. 
     # 'GENERAL_SFS': Uses the single best set from feature_selector.py.
-    FEATURE_SET_STRATEGY = 'MODEL_SPECIFIC'  # 'STATISTICAL' or 'MODEL_SPECIFIC' or 'GENERAL_SFS'
+    FEATURE_SET_STRATEGY = 'STATISTICAL'  # 'STATISTICAL' or 'MODEL_SPECIFIC' or 'GENERAL_SFS'
     
     # This is only used for the 'MODEL_SPECIFIC' strategy
     OPTIMIZATION_METRIC = 'roc_auc' # 'roc_auc' or 'f1_score'
@@ -192,9 +194,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
         {'column': 'has_pulse_ox_data', 'operator': '==', 'value': 1},
         {'column': 'has_steps_data', 'operator': '==', 'value': 1},
     ]
-
-
-
+    
     if run_preparation:
         print("\n--- Fase 1: Preparazione del Dataset ---")
         preparer = DatasetPreparer(**PREPARER_PARAMS) # creates an instance of the class DatasetPreparer using the parameter defined in the dictionary
@@ -918,7 +918,7 @@ def run_pipeline(run_preparation=True, run_feature_extraction=True,run_visualiza
 if __name__ == "__main__":
    
     run_pipeline(
-        run_preparation = False, # Esegui la preparazione dei dati
+        run_preparation = True, # Esegui la preparazione dei dati
         visualize_preparation_steps = False, # Imposta a True per vedere i plot durante la preparazione (può essere molto verboso)
         run_feature_extraction = False, # Esegui l'estrazione delle feature
         run_visualization = False, # Avvia il visualizzatore interattivo
@@ -930,5 +930,5 @@ if __name__ == "__main__":
         run_feature_importance = False,
         run_performance_analysis = False,
         run_time_gain_analysis = False,
-        RELOAD_STATS_FROM_CSV = True # Set to True to load, False to recalculate the effect size and CIs
+        RELOAD_STATS_FROM_CSV = False # Set to True to load, False to recalculate the effect size and CIs
     )

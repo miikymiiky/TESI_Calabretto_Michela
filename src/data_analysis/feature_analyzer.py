@@ -15,8 +15,8 @@ import os
 from typing import Union, List, Dict, Any
 from scipy.stats import pearsonr # for calculating Pearson correlation
 from scipy.stats import kruskal # libraries for statistical tests
-import pingouin as pg
-import scikit_posthocs as sp # alternative library to pingouin
+#import pingouin as pg
+#import scikit_posthocs as sp # alternative library to pingouin
 from scipy.stats import bootstrap
 import re
 
